@@ -1,6 +1,7 @@
-if !exists('s:job_id') | let s:job_id = 0 | endif
-if !exists('s:seq') | let s:seq = 1 | endif
-if !exists('s:capabilities') | let s:capabilities = {} | endif
+let s:job_id = 0
+let s:seq = 1
+let s:capabilities = {}
+let s:breakpoints = {} " from path to list
 
 function! dap#connect(host, port) abort
   "if s:job_id != 0
@@ -49,6 +50,17 @@ function! dap#launch(args) abort
   call s:send_message(l:request)
 endfunction
 
+function! dap#add_breakpoint() abort
+  let l:path = expand('%:p')
+  let l:line = line('.')
+  if !has_key(s:breakpoints, l:path)
+    let s:breakpoints[l:path] = []
+  endif
+  call s:set_breakpoints(l:path, add(s:breakpoints[l:path], {
+        \ 'line': l:line
+        \ }))
+endfunction
+
 " TODO: don't echo log messages
 function! dap#log(msg) abort
   echo a:msg
@@ -87,30 +99,43 @@ function! s:handle_stdout(job_id, data, event_type) abort
     return
   endif
 
-  let l:response = json_decode(a:data[l:i])
-  if type(l:response) != v:t_dict
+  let l:message = json_decode(a:data[l:i])
+  if type(l:message) != v:t_dict
     call dap#log_error('Bad response, not a dict')
     return
   endif
-  let g:dap_last_response = l:response
+  let g:dap_last_message = l:message
 
-  let l:command = l:response['command']
-  if !l:response['success']
+  let l:message_type = l:message['type']
+  if l:message_type == 'response'
+    call s:handle_response(l:message)
+  elseif l:message_type == 'event'
+    call s:handle_event(l:message)
+  endif
+endfunction
+
+function! s:handle_response(message) abort
+  let l:command = a:message['command']
+  if !a:message['success']
     if l:command == 'initialize'
       call dap#log_error('Initialization failed')
       call s:reset()
     else
-      call dap#log_error('Command failed: '.l:command.': '.l:response['message'])
+      call dap#log_error('Command failed: '.l:command.': '.a:message['message'])
     endif
     return
   endif
 
   if l:command == 'initialize'
     call dap#log('Initialization successful')
-    let s:capabilities = l:response['body']
+    let s:capabilities = a:message['body']
   else
     echomsg 'Command succeeded: '.l:command
   endif
+endfunction
+
+function! s:handle_event(message) abort
+  echomsg 'Received event: '.a:message['event']
 endfunction
 
 function! s:handle_stderr(job_id, data, event_type) abort
@@ -121,7 +146,7 @@ function! s:handle_exit(job_id, data, event_type) abort
   echomsg 'exiting'
 endfunction
 
-function! s:send_message(message)
+function! s:send_message(message) abort
   let l:data = json_encode(a:message)
   let l:content_length = strlen(l:data)
   call dap#async#job#send(s:job_id, "Content-Length: ".l:content_length."\r\n")
@@ -129,13 +154,35 @@ function! s:send_message(message)
   call dap#async#job#send(s:job_id, l:data)
 endfunction
 
-function! s:initialize()
+function! s:initialize() abort
   " TODO: support other arguments
   let l:request = {
         \ 'seq': s:seq,
         \ 'type': 'request',
         \ 'command': 'initialize',
         \ 'arguments': {'adapterID': 'vim-dap'},
+        \ }
+  let s:seq = s:seq+1
+
+  call s:send_message(l:request)
+endfunction
+
+" TODO: this returns an error of 'Empty debug session.'
+" Do we need to do something besides send an initialize request?
+" Looks like we need to first do an 'attach' or 'launch' command.
+" https://microsoft.github.io/debug-adapter-protocol/overview
+function! s:set_breakpoints(path, points) abort
+  if s:job_id == 0
+    call dap#log_error('No debugger session running.')
+    return
+  endif
+  let l:request = {
+        \ 'seq': s:seq,
+        \ 'type': 'request',
+        \ 'command': 'setBreakpoints',
+        \ 'arguments': {
+        \   'source': { 'path': a:path },
+        \   'breakpoints': a:points},
         \ }
   let s:seq = s:seq+1
 
