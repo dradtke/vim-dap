@@ -3,4 +3,6 @@ if !exists('*json_encode') || !exists('*json_decode')
 endif
 
 command! -nargs=1 DapConnect call dap#connect('localhost', <args>)
-command! DapBreak call dap#add_breakpoint()
+command! Break call dap#toggle_breakpoint('%', '.')
+command! Run call dap#configuration_done()
+command! Continue call dap#continue_stopped()

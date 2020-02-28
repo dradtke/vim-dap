@@ -4,10 +4,16 @@ if !exists('g:dap_initialized')
   let s:output_buffer = -1
   let s:capabilities = {}
   let s:breakpoints = {} " from path to list
+  let s:response_handlers = {}
+  let s:stopped_thread = -1
+  let s:launch_args = v:null
+  let s:running = v:false
   let g:dap_initialized = v:true
+
+  call sign_define('dap-breakpoint', {'text': '🛑'})
 endif
 
-function! dap#connect(host, port) abort
+function! dap#connect(host, port, callback) abort
   if !executable('nc')
     echoerr 'command "nc" not found! please install netcat and try again'
     return
@@ -22,7 +28,7 @@ function! dap#connect(host, port) abort
         \ 'on_stderr': function('s:handle_stderr'),
         \ 'on_exit': function('s:handle_exit'),
         \ })
-  call s:initialize()
+  call s:initialize(a:callback)
 endfunction
 
 function! dap#disconnect() abort
@@ -49,26 +55,78 @@ function! dap#launch(arguments) abort
     echoerr 'No debug session running.'
     return
   endif
-  call s:send_request('launch', a:arguments)
+  call s:send_message(s:build_request('launch', a:arguments))
+endfunction
+
+function! dap#restart() abort
+  if s:job_id == 0
+    echoerr 'No debug session running.'
+    return
+  endif
+  if s:capabilities['supportsRestartRequest']
+    echoerr 'Fancy restart not implemented yet.'
+  endif
+  call dap#terminate(v:true)
+  " TODO: more work here is needed. After terminating the debugee, the entire
+  " process needs to be killed (probably just with dap#disconnect()), but
+  " _then_ we need to start the debug session all over again. Phew.
 endfunction
 
 function! dap#threads() abort
-  call s:send_request('threads', v:null)
+  call s:send_message(s:build_request('threads', v:null))
 endfunction
 
 function! dap#continue(thread_id) abort
-  call s:send_request('continue', {'threadId': a:thread_id})
+  call s:send_message(s:build_request('continue', {'threadId': a:thread_id}))
 endfunction
 
-function! dap#add_breakpoint() abort
-  let l:path = expand('%:p')
-  let l:line = line('.')
+function! dap#continue_stopped() abort
+  if s:stopped_thread == -1
+    echoerr 'No stopped thread.'
+    return
+  endif
+  call dap#continue(s:stopped_thread)
+  let s:stopped_thread = -1
+endfunction
+
+function! dap#terminate(restart) abort
+  call s:send_message(s:build_request('terminate', {'restart': a:restart}))
+endfunction
+
+function! dap#toggle_breakpoint(buffer, line) abort
+  let l:path = 'file://'.expand(a:buffer.':p')
+  let l:line = line(a:line)
   if !has_key(s:breakpoints, l:path)
     let s:breakpoints[l:path] = []
   endif
-  call s:set_breakpoints(l:path, add(s:breakpoints[l:path], {
-        \ 'line': l:line
-        \ }))
+  let l:buffer_breakpoints = s:breakpoints[l:path]
+  let l:found = v:false
+
+  for l:breakpoint in l:buffer_breakpoints
+    if l:breakpoint['line'] == l:line
+      " breakpoint exists, remove it
+      call sign_unplace('dap-breakpoints', {'buffer': a:buffer, 'id': l:breakpoint['sign_id']})
+      call remove(l:buffer_breakpoints, index(l:buffer_breakpoints, l:breakpoint))
+      let l:found = v:true
+      break
+    endif
+  endfor
+
+  if !l:found
+    let sign_id = sign_place(0, 'dap-breakpoints', 'dap-breakpoint', a:buffer, {'lnum': l:line})
+    call add(l:buffer_breakpoints, {'line': l:line, 'sign_id': sign_id})
+  endif
+
+  call s:set_breakpoints(l:path, l:buffer_breakpoints)
+endfunction
+
+function! dap#configuration_done() abort
+  if s:running
+    echoerr 'Already running.'
+    return
+  endif
+  call s:send_message(s:build_request('configurationDone', {}))
+  let s:running = v:true
 endfunction
 
 " TODO: don't echo log messages
@@ -141,8 +199,6 @@ function! s:handle_stdout(job_id, data, event_type) abort
       return
     endif
 
-    echo 'Found a valid message'
-
     let s:message_buffer = l:message['rest']
     
     let l:body = json_decode(l:message['content'])
@@ -155,10 +211,8 @@ function! s:handle_stdout(job_id, data, event_type) abort
 
     let l:message_type = l:body['type']
     if l:message_type == 'response'
-      echo 'handling response'
       call s:handle_response(l:body)
     elseif l:message_type == 'event'
-      echo 'handling event'
       call s:handle_event(l:body)
     endif
   endwhile
@@ -166,6 +220,7 @@ endfunction
 
 function! s:handle_response(data) abort
   let l:command = a:data['command']
+  echo 'Handling response for '.l:command
   if !a:data['success']
     if l:command == 'initialize'
       call dap#log_error('Initialization failed')
@@ -179,20 +234,31 @@ function! s:handle_response(data) abort
   if l:command == 'initialize'
     call dap#log('Initialization successful')
     let s:capabilities = a:data['body']
-  elseif l:command == 'threads'
+  endif
+
+  let l:request_seq = a:data['request_seq']
+  if has_key(s:response_handlers, l:request_seq)
+    call s:response_handlers[l:request_seq](a:data)
+    call remove(s:response_handlers, l:request_seq)
+    return
+  endif
+
+  if l:command == 'threads'
     let l:message = ''
     " TODO: sort these threads, and/or display them differently
     for l:thread in a:data['body']['threads']
       let message .= l:thread['id'].': '.l:thread['name']."\n"
     endfor
     echo l:message
+  elseif l:command == 'setBreakpoints'
+    " might be nice to use this result to ensure we're in sync
   else
     echomsg 'Command succeeded: '.l:command
   endif
 endfunction
 
 function! s:handle_event(data) abort
-  " echomsg 'Received event: '.a:data['event']
+  echomsg 'Received event: '.a:data['event']
   if a:data['event'] == 'initialized'
     if bufexists(s:output_buffer)
       " Clear out the existing output window if there is one.
@@ -205,7 +271,65 @@ function! s:handle_event(data) abort
     " character, otherwise each line ends with ^@
     let l:output = substitute(a:data['body']['output'], '\n$', '', '')
     call appendbufline(s:output_buffer, '$', l:output)
+  elseif a:data['event'] == 'stopped'
+    call s:handle_event_stopped(a:data['body'])
+  elseif a:data['event'] == 'terminated'
+    let l:restart = v:null
+    if has_key(a:data, 'body') && has_key(a:data['body'], 'restart')
+      let l:restart = a:data['body']['restart']
+    endif
+    call s:handle_event_terminated(l:restart)
+  elseif a:data['event'] == 'exited'
+    call s:handle_event_exited(a:data['body']['exitCode'])
   endif
+endfunction
+
+function! s:handle_event_stopped(body) abort
+  if has_key(a:body, 'threadId')
+    let l:request = s:build_request('stackTrace', {
+          \ 'threadId': a:body['threadId'],
+          \ 'levels': 1,
+          \ 'format': {'line': v:true},
+          \ })
+    call s:add_response_handler(l:request, function('s:handle_event_stopped_stacktrace'))
+    call s:send_message(l:request)
+  endif
+  let l:reason = a:body['reason']
+  if l:reason == 'breakpoint'
+    echomsg 'Stopped at a breakpoint'
+    if has_key(a:body, 'threadId')
+      let s:stopped_thread = a:body['threadId']
+    endif
+  else
+    if has_key(a:body, 'description')
+      echomsg a:body['description']
+    else
+      echomsg 'Stopped for reason: '.l:reason
+    endif
+  endif
+endfunction
+
+function! s:handle_event_stopped_stacktrace(data) abort
+  let l:stackframes = a:data['body']['stackFrames']
+  if empty(l:stackframes)
+    echoerr 'Cannot jump to stopped location, stack trace is empty.'
+    return
+  endif
+
+  let l:frame = l:stackframes[0]
+  let l:path = l:frame['source']['path']
+  let l:line = l:frame['line']
+
+  exec ':keepalt edit +'.l:line.' '.l:path
+endfunction
+
+function! s:handle_event_terminated(restart) abort
+  echo 'Event terminated, restart? '.a:restart
+endfunction
+
+function! s:handle_event_exited(exit_code) abort
+  let s:running = v:false
+  echomsg 'Process exited with exit code '.a:exit_code
 endfunction
 
 function! s:handle_reverse_request(data) abort
@@ -229,7 +353,7 @@ function! s:send_message(body) abort
   call dap#async#job#send(s:job_id, "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body)
 endfunction
 
-function! s:send_request(command, arguments)
+function! s:build_request(command, arguments) abort
   let l:request = {
         \ 'seq': s:seq,
         \ 'type': 'request',
@@ -241,19 +365,23 @@ function! s:send_request(command, arguments)
   endif
 
   let s:seq = s:seq+1
+  return l:request
+endfunction
+
+function! s:add_response_handler(request, handler) abort
+  let s:response_handlers[a:request['seq']] = a:handler
+endfunction
+
+function! s:initialize(callback) abort
+  " TODO: support other arguments
+  let l:request = s:build_request('initialize', {'adapterID': 'vim-dap'})
+  call s:add_response_handler(l:request, a:callback)
   call s:send_message(l:request)
 endfunction
 
-function! s:initialize() abort
-  " TODO: support other arguments
-  call s:send_request('initialize', {'adapterID': 'vim-dap'})
-endfunction
-
-" TODO: this returns an error of 'Empty debug session.'
-" Do we need to do something besides send an initialize request?
-" Looks like we need to first do an 'attach' or 'launch' command.
-" https://microsoft.github.io/debug-adapter-protocol/overview
-function! s:set_breakpoints(path, points) abort
+" TODO: this won't work until we've received the initialized event, so enforce
+" that.
+function! s:set_breakpoints(path, breakpoints) abort
   if s:job_id == 0
     call dap#log_error('No debugger session running.')
     return
@@ -264,7 +392,7 @@ function! s:set_breakpoints(path, points) abort
         \ 'command': 'setBreakpoints',
         \ 'arguments': {
         \   'source': { 'path': a:path },
-        \   'breakpoints': a:points},
+        \   'breakpoints': a:breakpoints},
         \ }
   let s:seq = s:seq+1
 
