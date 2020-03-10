@@ -1,21 +1,18 @@
 if !exists('g:dap_initialized')
   let s:job_id = -1
   let s:seq = 1
-  let s:output_buffer = -1
   let s:capabilities = {}
-  let s:breakpoints = {} " from path to list
   let s:response_handlers = {}
   let s:stopped_thread = -1
   let s:stopped_stack_frame_id = -1
   let s:launch_args = v:null
   let s:running = v:false
-  let s:output_log = '/tmp/vim-dap-output.log'
   let s:start_function = v:null
-  let g:dap_use_vimux_output = exists('g:loaded_vimux') && g:loaded_vimux
+  let g:dap_use_vimux = exists('g:loaded_vimux') && g:loaded_vimux
   let g:dap_initialized = v:true
 
   call sign_define('dap-breakpoint', {'text': '🛑'})
-  call sign_define('dap-stopped', {'text': '➡'})
+  call sign_define('dap-stopped', {'text': '⏸'})
 endif
 
 function! dap#set_start_function(start) abort
@@ -98,7 +95,7 @@ function! dap#threads() abort
 endfunction
 
 function! dap#continue(thread_id) abort
-  call sign_unplace('dap-stopped')
+  call sign_unplace('dap-stopped-group')
   call s:send_message(s:build_request('continue', {'threadId': a:thread_id}))
 endfunction
 
@@ -113,6 +110,7 @@ function! dap#continue_stopped() abort
 endfunction
 
 function! dap#next(thread_id) abort
+  call sign_unplace('dap-stopped-group')
   call s:send_message(s:build_request('next', {'threadId': a:thread_id}))
 endfunction
 
@@ -124,42 +122,56 @@ function! dap#next_stopped() abort
   call dap#next(s:stopped_thread)
 endfunction
 
+function! dap#step_in(thread_id) abort
+  " TODO: support step-in targets
+  call sign_unplace('dap-stopped-group')
+  call s:send_message(s:build_request('stepIn', {'threadId': a:thread_id}))
+endfunction
+
+function! dap#step_in_stopped() abort
+  if s:stopped_thread == -1
+    echoerr 'No stopped thread.'
+    return
+  endif
+  call dap#step_in(s:stopped_thread)
+endfunction
+
+function! dap#step_out(thread_id) abort
+  call sign_unplace('dap-stopped-group')
+  call s:send_message(s:build_request('stepOut', {'threadId': a:thread_id}))
+endfunction
+
+function! dap#step_out_stopped() abort
+  if s:stopped_thread == -1
+    echoerr 'No stopped thread.'
+    return
+  endif
+  call dap#step_out(s:stopped_thread)
+endfunction
+
 function! dap#terminate(restart) abort
   call VimuxSendKeys('C-c')
   call s:send_message(s:build_request('terminate', {'restart': a:restart}))
 endfunction
 
 function! s:buffer_path(buffer) abort
-  let l:result = 'file://'.expand('#'.a:buffer.':p')
-  echo 'buffer path for '.a:buffer.' = '.l:result
-  return l:result
+  " prepend file:// if we need uris
+  return expand('#'.a:buffer.':p')
 endfunction
 
 function! dap#toggle_breakpoint(bufexpr, line) abort
   let l:buffer = bufnr(a:bufexpr)
   let l:line = line(a:line)
-  if !has_key(s:breakpoints, l:buffer)
-    let s:breakpoints[l:buffer] = []
-  endif
-  let l:buffer_breakpoints = s:breakpoints[l:buffer]
   let l:found = v:false
 
-  for l:breakpoint in l:buffer_breakpoints
-    if l:breakpoint['line'] == l:line
-      " breakpoint exists, remove it
-      " call sign_unplace('dap-breakpoints', {'buffer': a:buffer, 'id': l:breakpoint['sign_id']})
-      call remove(l:buffer_breakpoints, index(l:buffer_breakpoints, l:breakpoint))
-      let l:found = v:true
-      break
-    endif
-  endfor
-
-  if !l:found
-    " let sign_id = sign_place(0, 'dap-breakpoints', 'dap-breakpoint', a:buffer, {'lnum': l:line})
-    call add(l:buffer_breakpoints, {'line': l:line})
+  let l:existing = sign_getplaced(l:buffer, {'group': 'dap-breakpoint-group', 'lnum': l:line})[0]['signs']
+  if empty(l:existing)
+    call sign_place(0, 'dap-breakpoint-group', 'dap-breakpoint', l:buffer, {'lnum': l:line})
+  else
+    call sign_unplace('dap-breakpoint-group', {'buffer': l:buffer, 'lnum': l:line})
   endif
 
-  call s:set_breakpoints(l:buffer, l:buffer_breakpoints)
+  " call s:set_breakpoints(l:buffer, l:buffer_breakpoints)
 endfunction
 
 function! dap#configuration_done() abort
@@ -169,11 +181,6 @@ function! dap#configuration_done() abort
   endif
   call s:send_message(s:build_request('configurationDone', {}))
   let s:running = v:true
-
-  call writefile([], s:output_log)
-  call VimuxSendKeys('C-c')
-  call VimuxSendText('clear && echo "== Running ==\n" && tail -f '.s:output_log)
-  call VimuxSendKeys('Enter')
 endfunction
 
 function! dap#evaluate(expression) abort
@@ -191,36 +198,6 @@ endfunction
 
 function! dap#log_error(msg) abort
   echomsg a:msg
-endfunction
-
-function! s:open_output_window() abort
-  if g:dap_use_vimux_output
-    call VimuxOpenRunner()
-    call VimuxSendKeys('C-c')
-    call VimuxSendText('clear && echo "Debugger ready, use the command :Run to begin execution.\n" && sleep infinity')
-    call VimuxSendKeys('Enter')
-  else
-    if bufexists(s:output_buffer)
-      " Clear out the existing output window if there is one.
-      call deletebufline(s:output_buffer, 1, '$')
-    else
-      10new Output
-      setlocal buftype=nofile bufhidden=hide noswapfile
-      let s:output_buffer = bufnr('%')
-      let g:output_buffer = s:output_buffer
-    endif
-  endif
-endfunction
-
-function! s:write_output(output) abort
-  let l:output = substitute(a:output, '\n$', '', '')
-  if g:dap_use_vimux_output
-    call writefile([l:output], s:output_log, 'a')
-  else
-    " Since we're appending a new line, trim off any existing final newline
-    " character, otherwise each line ends with ^@
-    call appendbufline(s:output_buffer, '$', l:output)
-  endif
 endfunction
 
 function! s:reset()
@@ -292,6 +269,8 @@ function! s:handle_stdout(job_id, data, event_type) abort
       call s:handle_response(l:body)
     elseif l:message_type == 'event'
       call s:handle_event(l:body)
+    elseif l:message_type == 'request'
+      call s:handle_reverse_request(l:body)
     endif
   endwhile
 endfunction
@@ -328,14 +307,13 @@ function! s:handle_response(data) abort
     endfor
     echo l:message
   elseif l:command == 'setBreakpoints'
-    "let s:breakpoints = {}
-    "call sign_unplace('dap-breakpoints')
-    for l:breakpoint in a:data['body']['breakpoints']
-      if !l:breakpoint['verified']
-        " TODO: this seems to happen surprisingly often, but why?
-        echoerr 'Could not verify breakpoint: '.l:breakpoint['message']
-      endif
-    endfor
+    "for l:breakpoint in a:data['body']['breakpoints']
+    "  if !l:breakpoint['verified']
+    "    " TODO: this seems to happen surprisingly often, but why?
+    "    echoerr 'Could not verify breakpoint'
+    "    let g:unverified_breakpoint = l:breakpoint
+    "  endif
+    "endfor
   elseif l:command == 'evaluate'
     echomsg 'Evaluation result: '.a:data['body']['result']
   else
@@ -346,12 +324,13 @@ endfunction
 function! s:handle_event(data) abort
   echomsg 'Received event: '.a:data['event']
   if a:data['event'] == 'initialized'
-    call s:open_output_window()
     call s:set_all_breakpoints()
   elseif a:data['event'] == 'output'
-    call s:write_output(a:data['body']['output'])
+    echoerr 'The debuggee should be running in a terminal, no output event is expected.'
   elseif a:data['event'] == 'stopped'
     call s:handle_event_stopped(a:data['body'])
+  elseif a:data['event'] == 'breakpoint'
+    call s:handle_event_breakpoint(a:data['body'])
   elseif a:data['event'] == 'terminated'
     let l:restart = v:null
     if has_key(a:data, 'body') && has_key(a:data['body'], 'restart')
@@ -365,8 +344,9 @@ endfunction
 
 function! s:handle_event_stopped(body) abort
   if has_key(a:body, 'threadId')
+    let s:stopped_thread = a:body['threadId']
     let l:request = s:build_request('stackTrace', {
-          \ 'threadId': a:body['threadId'],
+          \ 'threadId': s:stopped_thread,
           \ 'levels': 1,
           \ 'format': {'line': v:true},
           \ })
@@ -377,13 +357,14 @@ function! s:handle_event_stopped(body) abort
   if l:reason == 'breakpoint'
     echomsg 'Stopped at a breakpoint'
     if has_key(a:body, 'threadId')
-      let s:stopped_thread = a:body['threadId']
     endif
   else
     if has_key(a:body, 'description')
       echomsg a:body['description']
+    elseif has_key(a:body, 'text')
+      echomsg a:body['text']
     else
-      echomsg 'Stopped for reason: '.l:reason
+      echomsg 'Stopped by '.l:reason
     endif
   endif
 endfunction
@@ -401,15 +382,24 @@ function! s:handle_event_stopped_stacktrace(data) abort
   let l:line = l:frame['line']
 
   exec ':keepalt edit +'.l:line.' '.l:path
-  call sign_place(1, 'dap-stopped', 'dap-stopped', '%', {'lnum': l:line, 'priority': 11})
+  call sign_place(1, 'dap-stopped-group', 'dap-stopped', '%', {'lnum': l:line, 'priority': 11})
+endfunction
+
+function! s:handle_event_breakpoint(body) abort
+  let l:reason = a:body['reason']
+  echo 'breakpoint event, reason: '.l:reason
+  if l:reason == 'new'
+  elseif l:reason == 'removed'
+  elseif l:reason == 'changed'
+  else
+    echoerr 'unknown breakpoint reason: '.l:reason
+  endif
 endfunction
 
 function! s:handle_event_terminated(restart) abort
   if a:restart
     " TODO: restart automatically?
     echomsg 'Program terminated, but restart requested.'
-  else
-    call s:write_output('== Program terminated, use the command :Restart to restart ==')
   endif
 endfunction
 
@@ -420,8 +410,42 @@ endfunction
 
 function! s:handle_reverse_request(data) abort
   if a:data['command'] == 'runInTerminal'
-    echomsg 'Received request to run this in a terminal: '.join(a:data['args'], ' ')
-    " run this in a terminal
+    let l:request_args = a:data['arguments']
+    " if has_key(l:request_args, 'kind')
+    "   echomsg 'Requested terminal kind: '.l:args['kind']
+    " endif
+    " if has_key(l:request_args, 'title')
+    "   echomsg 'Requested terminal title: '.l:args['title']
+    " endif
+
+    let l:command_args = l:request_args['args']
+    call map(l:command_args, 'shellescape(v:val)')
+    let l:command = join(l:command_args, ' ')
+
+    if has_key(l:request_args, 'cwd') || has_key(l:request_args, 'env')
+      let l:env = 'env'
+      if has_key(l:request_args, 'cwd')
+        let l:env .= ' --chdir='.shellescape(l:request_args['cwd'])
+      endif
+      if has_key(l:request_args, 'env')
+        for [l:key, l:value] in items(l:request_args['env'])
+          let l:env .= ' '.l:key.'='.shellescape(l:value)
+        endfor
+      endif
+      let l:command = l:env.' '.l:command
+    endif
+
+    let l:script = '/tmp/vim-dap-debug.sh'
+    call writefile(['exec '.l:command], l:script)
+    " execute 'terminal '.l:command
+    if g:dap_use_vimux
+      call VimuxRunCommand('clear; sh '.l:script)
+    else
+      " TODO: terminals need to be closed after they exit
+      execute 'split | terminal clear; sh '.l:script
+    endif
+    let l:pid = trim(system('pgrep -f "sh '.l:script.'"'))
+    call s:send_message(s:build_response(a:data, v:true, {'processId': l:pid}))
   endif
 endfunction
 
@@ -454,47 +478,66 @@ function! s:build_request(command, arguments) abort
   return l:request
 endfunction
 
+function! s:build_response(request, success, body) abort
+  let l:response = {
+        \ 'seq': s:seq,
+        \ 'type': 'response',
+        \ 'request_seq': a:request['seq'],
+        \ 'command': a:request['command'],
+        \ 'success': a:success,
+        \ 'body': a:body,
+        \ }
+  
+  let s:seq = s:seq+1
+  return l:response
+endfunction
+
 function! s:add_response_handler(request, handler) abort
   let s:response_handlers[a:request['seq']] = a:handler
 endfunction
 
 function! s:initialize(callback) abort
   " TODO: support other arguments
-  let l:request = s:build_request('initialize', {'adapterID': 'vim-dap'})
+  let l:request = s:build_request('initialize', {
+        \ 'adapterID': 'vim-dap',
+        \ 'pathFormat': 'path',
+        \ 'linesStartAt1': v:true,
+        \ 'columnsStartAt1': v:true,
+        \ 'supportsRunInTerminalRequest': v:true,
+        \ })
   call s:add_response_handler(l:request, a:callback)
   call s:send_message(l:request)
 endfunction
 
 " TODO: this won't work until we've received the initialized event, so enforce
 " that.
-function! s:set_breakpoints(buffer, breakpoints) abort
+function! s:set_breakpoints(buffer, signs) abort
   if s:job_id == 0
     call dap#log_error('No debugger session running.')
     return
   endif
+  let l:breakpoints = []
+  for l:sign in a:signs
+    call add(l:breakpoints, {'line': l:sign['lnum']})
+  endfor
   let l:request = {
         \ 'seq': s:seq,
         \ 'type': 'request',
         \ 'command': 'setBreakpoints',
         \ 'arguments': {
         \   'source': { 'path': s:buffer_path(a:buffer) },
-        \   'breakpoints': a:breakpoints},
+        \   'breakpoints': l:breakpoints},
         \ }
-  echo 'breakpoint path: '.l:request['arguments']['source']['path']
-  echo 'breakpoint line: '.l:request['arguments']['breakpoints'][0]['line']
+  "echo 'breakpoint path: '.l:request['arguments']['source']['path']
+  "echo 'breakpoint line: '.l:request['arguments']['breakpoints'][0]['line']
   let s:seq = s:seq+1
 
   call s:send_message(l:request)
-
-  call sign_unplace('dap-breakpoints', {'buffer': a:buffer})
-  for l:breakpoint in a:breakpoints
-    call sign_place(0, 'dap-breakpoints', 'dap-breakpoint', a:buffer, {'lnum': l:breakpoint['line']})
-  endfor
 endfunction
 
 function! s:set_all_breakpoints() abort
-  for [l:buffer, l:breakpoints] in items(s:breakpoints)
-    call s:set_breakpoints(l:buffer, l:breakpoints)
+  for l:item in sign_getplaced('', {'group': 'dap-breakpoint-group'})
+    call s:set_breakpoints(l:item['bufnr'], l:item['signs'])
   endfor
 endfunction
 
