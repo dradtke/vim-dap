@@ -2,13 +2,15 @@ if !exists('g:dap_initialized')
   let s:job_id = -1
   let s:seq = 1
   let s:capabilities = {}
-  let s:response_handlers = {}
+  let s:response_handlers = {}  " unused really, but left here because it may end up being useful
+  let s:configuration_done_guard = {}
   let s:stopped_thread = -1
   let s:stopped_stack_frame_id = -1
   let s:show_var = ''
   let s:launch_args = v:null
   let s:running = v:false
-  let s:start_function = v:null
+  let s:start_function = v:null  " client-specific function for starting the debug session
+  let s:run_function = v:null  " client-specific function for launching the debuggee
   let s:scopes = []
   let g:dap_use_vimux = exists('g:loaded_vimux') && g:loaded_vimux
   let g:dap_initialized = v:true
@@ -21,15 +23,31 @@ function! dap#set_start_function(start) abort
   let s:start_function = a:start
 endfunction
 
-function! dap#start() abort
+function! dap#set_run_function(run) abort
+  let s:run_function = a:run
+endfunction
+
+function! dap#run() abort
   if s:start_function == v:null
     echoerr 'No start function defined, must call dap#set_start_function() first.'
     return
   endif
-  call s:start_function()
+  if s:run_function == v:null
+    echoerr 'No run function defined, must call dap#set_run_function() first.'
+    return
+  endif
+
+  if s:running
+    if s:capabilities['supportsRestartRequest']
+      echoerr 'Fancy restart requested, but not implemented yet.'
+    endif
+    call dap#terminate(v:true)  " TODO: ensure that this restarts the debuggee
+  else
+    call s:start_function()
+  endif
 endfunction
 
-function! dap#connect(host, port, callback) abort
+function! dap#connect(host, port) abort
   if !executable('nc')
     echoerr 'command "nc" not found! please install netcat and try again'
     return
@@ -44,7 +62,7 @@ function! dap#connect(host, port, callback) abort
         \ 'on_stderr': function('s:handle_stderr'),
         \ 'on_exit': function('s:handle_exit'),
         \ })
-  call s:initialize(a:callback)
+  call s:initialize()
 endfunction
 
 function! dap#disconnect() abort
@@ -52,8 +70,7 @@ function! dap#disconnect() abort
     call dap#log_error('No connection to disconnect from.')
     return
   endif
-  call dap#async#job#stop(s:job_id)
-  call s:reset()
+  call s:send_message(s:build_request('disconnect', {}))
 endfunction
 
 function! dap#get_capabilities() abort
@@ -72,24 +89,6 @@ function! dap#launch(arguments) abort
     return
   endif
   call s:send_message(s:build_request('launch', a:arguments))
-endfunction
-
-function! dap#restart() abort
-  if s:job_id == -1
-    echoerr 'No debug session running.'
-    return
-  endif
-  if s:capabilities['supportsRestartRequest']
-    echoerr 'Fancy restart not implemented yet.'
-    return
-  endif
-  call dap#terminate(v:true)
-  call dap#disconnect()
-  let s:running = v:false
-  call s:start_function()
-  " TODO: more work here is needed. After terminating the debugee, the entire
-  " process needs to be killed (probably just with dap#disconnect()), but
-  " _then_ we need to start the debug session all over again. Phew.
 endfunction
 
 function! dap#threads() abort
@@ -153,7 +152,9 @@ function! dap#step_out_stopped() abort
 endfunction
 
 function! dap#terminate(restart) abort
-  call VimuxSendKeys('C-c')
+  if s:running
+    call VimuxSendKeys('C-c')
+  endif
   call s:send_message(s:build_request('terminate', {'restart': a:restart}))
 endfunction
 
@@ -173,20 +174,6 @@ function! dap#toggle_breakpoint(bufexpr, line) abort
   else
     call sign_unplace('dap-breakpoint-group', {'buffer': l:buffer, 'lnum': l:line})
   endif
-endfunction
-
-function! dap#configuration_done() abort
-  if s:job_id == -1
-    call dap#log_error('No debugger session running.')
-    return
-  endif
-  if s:running
-    echoerr 'Already running.'
-    return
-  endif
-  call s:set_all_breakpoints()
-  call s:send_message(s:build_request('configurationDone', {}))
-  let s:running = v:true
 endfunction
 
 function! dap#evaluate(expression) abort
@@ -245,7 +232,7 @@ function! dap#log_error(msg) abort
 endfunction
 
 function! s:reset()
-  let s:job_id = 0
+  let s:job_id = -1
   let s:seq = 1
 endfunction
 
@@ -334,6 +321,13 @@ function! s:handle_response(data) abort
   if l:command == 'initialize'
     call dap#log('Initialization successful')
     let s:capabilities = a:data['body']
+    call s:run_function()
+  elseif l:command == 'launch'
+    call s:set_all_breakpoints()
+  elseif l:command == 'disconnect'
+    call dap#async#job#stop(s:job_id)
+    call s:reset()
+    return
   endif
 
   let l:request_seq = a:data['request_seq']
@@ -351,6 +345,10 @@ function! s:handle_response(data) abort
     endfor
     echo l:message
   elseif l:command == 'setBreakpoints'
+    unlet s:configuration_done_guard[l:request_seq]
+    if empty(s:configuration_done_guard)
+      call s:send_message(s:build_request('configurationDone', {}))
+    endif
     " TODO: it would be nice to remove unverified breakpoints, but they don't
     " seem to include source information, so we can't really do anything about
     " it.
@@ -383,10 +381,10 @@ function! s:handle_variables_response(variables) abort
 endfunction
 
 function! s:handle_event(data) abort
-  echomsg 'Received event: '.a:data['event']
   if a:data['event'] == 'initialized'
     call sign_unplace('dap-stopped-group')
-    call s:set_all_breakpoints()
+  elseif a:data['event'] == 'process'
+    let s:running = v:true
   elseif a:data['event'] == 'output'
     echoerr 'The debuggee should be running in a terminal, no output event is expected.'
   elseif a:data['event'] == 'stopped'
@@ -394,11 +392,8 @@ function! s:handle_event(data) abort
   elseif a:data['event'] == 'breakpoint'
     call s:handle_event_breakpoint(a:data['body'])
   elseif a:data['event'] == 'terminated'
-    let l:restart = v:null
-    if has_key(a:data, 'body') && has_key(a:data['body'], 'restart')
-      let l:restart = a:data['body']['restart']
-    endif
-    call s:handle_event_terminated(l:restart)
+    call dap#async#job#stop(s:job_id)
+    call s:reset()
   elseif a:data['event'] == 'exited'
     call s:handle_event_exited(a:data['body']['exitCode'])
   endif
@@ -460,13 +455,6 @@ function! s:handle_event_breakpoint(body) abort
   endif
 endfunction
 
-function! s:handle_event_terminated(restart) abort
-  if a:restart
-    " TODO: restart automatically?
-    echomsg 'Program terminated, but restart requested.'
-  endif
-endfunction
-
 function! s:handle_event_exited(exit_code) abort
   let s:running = v:false
   echomsg 'Process exited with exit code '.a:exit_code
@@ -514,11 +502,11 @@ function! s:handle_reverse_request(data) abort
 endfunction
 
 function! s:handle_stderr(job_id, data, event_type) abort
-  echomsg 'stderr: '.join(a:data, "\n")
+  " echomsg 'stderr: '.join(a:data, "\n")
 endfunction
 
 function! s:handle_exit(job_id, data, event_type) abort
-  echomsg 'exiting'
+  " no op
 endfunction
 
 function! s:send_message(body) abort
@@ -560,21 +548,17 @@ function! s:add_response_handler(request, handler) abort
   let s:response_handlers[a:request['seq']] = a:handler
 endfunction
 
-function! s:initialize(callback) abort
-  " TODO: support other arguments
-  let l:request = s:build_request('initialize', {
+function! s:initialize() abort
+  " TODO: support other arguments?
+  call s:send_message(s:build_request('initialize', {
         \ 'adapterID': 'vim-dap',
         \ 'pathFormat': 'path',
         \ 'linesStartAt1': v:true,
         \ 'columnsStartAt1': v:true,
         \ 'supportsRunInTerminalRequest': v:true,
-        \ })
-  call s:add_response_handler(l:request, a:callback)
-  call s:send_message(l:request)
+        \ }))
 endfunction
 
-" TODO: this won't work until we've received the initialized event, so enforce
-" that.
 function! s:set_breakpoints(buffer, signs) abort
   if s:job_id == -1
     call dap#log_error('No debugger session running.')
@@ -592,8 +576,6 @@ function! s:set_breakpoints(buffer, signs) abort
         \   'source': { 'path': s:buffer_path(a:buffer) },
         \   'breakpoints': l:breakpoints},
         \ }
-  "echo 'breakpoint path: '.l:request['arguments']['source']['path']
-  "echo 'breakpoint line: '.l:request['arguments']['breakpoints'][0]['line']
   let s:seq = s:seq+1
 
   call s:send_message(l:request)
@@ -604,8 +586,29 @@ function! s:set_all_breakpoints() abort
     call dap#log_error('No debugger session running.')
     return
   endif
+
+  " In order to ensure that all setBreakpoints requests have returned before
+  " configurationDone is sent, we build the requests first, add all of their
+  " seq values to the guard, and then send them all at once. The response
+  " listeners will remove each one from the guard, and when it's empty,
+  " configurationDone will be sent.
+
+  let l:requests = []
   for l:item in sign_getplaced('', {'group': 'dap-breakpoint-group'})
-    call s:set_breakpoints(l:item['bufnr'], l:item['signs'])
+    let l:breakpoints = []
+    for l:sign in l:item['signs']
+      call add(l:breakpoints, {'line': l:sign['lnum']})
+    endfor
+    let l:request = s:build_request('setBreakpoints', {
+        \   'source': { 'path': s:buffer_path(l:item['bufnr']) },
+        \   'breakpoints': l:breakpoints,
+        \ })
+    let s:configuration_done_guard[l:request['seq']] = v:true
+    call add(l:requests, l:request)
+  endfor
+
+  for l:request in l:requests
+    call s:send_message(l:request)
   endfor
 endfunction
 
