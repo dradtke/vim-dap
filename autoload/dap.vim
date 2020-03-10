@@ -5,9 +5,11 @@ if !exists('g:dap_initialized')
   let s:response_handlers = {}
   let s:stopped_thread = -1
   let s:stopped_stack_frame_id = -1
+  let s:show_var = ''
   let s:launch_args = v:null
   let s:running = v:false
   let s:start_function = v:null
+  let s:scopes = []
   let g:dap_use_vimux = exists('g:loaded_vimux') && g:loaded_vimux
   let g:dap_initialized = v:true
 
@@ -46,7 +48,7 @@ function! dap#connect(host, port, callback) abort
 endfunction
 
 function! dap#disconnect() abort
-  if s:job_id == 0
+  if s:job_id == -1
     call dap#log_error('No connection to disconnect from.')
     return
   endif
@@ -55,7 +57,7 @@ function! dap#disconnect() abort
 endfunction
 
 function! dap#get_capabilities() abort
-  if s:job_id == 0
+  if s:job_id == -1
     call dap#log_error('No debugger session running.')
     return v:null
   endif
@@ -65,7 +67,7 @@ endfunction
 " NOTE: In order to run JUnit, you need to specify a mainClass of
 " org.junit.runner.JUnitCore along with an array of classpaths.
 function! dap#launch(arguments) abort
-  if s:job_id == 0
+  if s:job_id == -1
     echoerr 'No debug session running.'
     return
   endif
@@ -73,7 +75,7 @@ function! dap#launch(arguments) abort
 endfunction
 
 function! dap#restart() abort
-  if s:job_id == 0
+  if s:job_id == -1
     echoerr 'No debug session running.'
     return
   endif
@@ -95,6 +97,7 @@ function! dap#threads() abort
 endfunction
 
 function! dap#continue(thread_id) abort
+  call s:set_all_breakpoints()
   call sign_unplace('dap-stopped-group')
   call s:send_message(s:build_request('continue', {'threadId': a:thread_id}))
 endfunction
@@ -170,15 +173,18 @@ function! dap#toggle_breakpoint(bufexpr, line) abort
   else
     call sign_unplace('dap-breakpoint-group', {'buffer': l:buffer, 'lnum': l:line})
   endif
-
-  " call s:set_breakpoints(l:buffer, l:buffer_breakpoints)
 endfunction
 
 function! dap#configuration_done() abort
+  if s:job_id == -1
+    call dap#log_error('No debugger session running.')
+    return
+  endif
   if s:running
     echoerr 'Already running.'
     return
   endif
+  call s:set_all_breakpoints()
   call s:send_message(s:build_request('configurationDone', {}))
   let s:running = v:true
 endfunction
@@ -189,6 +195,44 @@ function! dap#evaluate(expression) abort
     let l:body['frameId'] = s:stopped_stack_frame_id
   endif
   call s:send_message(s:build_request('evaluate', l:body))
+endfunction
+
+function! dap#scopes(frame_id) abort
+  let l:body = {'frameId': a:frame_id}
+  call s:send_message(s:build_request('scopes', l:body))
+endfunction
+
+function! dap#echo_scopes() abort
+  let l:scope_names = []
+  for l:scope in s:scopes
+    call add(l:scope_names, l:scope['name'])
+  endfor
+  echomsg 'Available scopes: '.join(l:scope_names, ', ') | echo ''
+endfunction
+
+function! dap#show_scope(name) abort
+  let s:show_var = ''
+  call s:show_scope(a:name)
+endfunction
+
+function! dap#show_scope_var(name, var) abort
+  let s:show_var = a:var
+  call s:show_scope(a:name)
+endfunction
+
+function! s:show_scope(name) abort
+  for l:scope in s:scopes
+    if l:scope['name'] == a:name
+      call dap#variables(l:scope['variablesReference'])
+      return
+    endif
+  endfor
+  echoerr 'No scope found for name: '.a:name
+endfunction
+
+function! dap#variables(ref) abort
+  let l:body = {'variablesReference': a:ref}
+  call s:send_message(s:build_request('variables', l:body))
 endfunction
 
 " TODO: don't echo log messages
@@ -307,23 +351,41 @@ function! s:handle_response(data) abort
     endfor
     echo l:message
   elseif l:command == 'setBreakpoints'
-    "for l:breakpoint in a:data['body']['breakpoints']
-    "  if !l:breakpoint['verified']
-    "    " TODO: this seems to happen surprisingly often, but why?
-    "    echoerr 'Could not verify breakpoint'
-    "    let g:unverified_breakpoint = l:breakpoint
-    "  endif
-    "endfor
+    " TODO: it would be nice to remove unverified breakpoints, but they don't
+    " seem to include source information, so we can't really do anything about
+    " it.
   elseif l:command == 'evaluate'
     echomsg 'Evaluation result: '.a:data['body']['result']
+  elseif l:command == 'scopes'
+    let s:scopes = a:data['body']['scopes']
+  elseif l:command == 'variables'
+    call s:handle_variables_response(a:data['body']['variables'])
   else
     echomsg 'Command succeeded: '.l:command
+  endif
+endfunction
+
+function! s:handle_variables_response(variables) abort
+  if empty(s:show_var)
+    let l:variable_names = []
+    for l:variable in a:variables
+      call add(l:variable_names, l:variable['name'])
+    endfor
+    echomsg 'Variables in scope: '.join(l:variable_names, ', ')
+  else
+    for l:variable in a:variables
+      if l:variable['name'] == s:show_var
+        echomsg l:variable['value']
+        break
+      endif
+    endfor
   endif
 endfunction
 
 function! s:handle_event(data) abort
   echomsg 'Received event: '.a:data['event']
   if a:data['event'] == 'initialized'
+    call sign_unplace('dap-stopped-group')
     call s:set_all_breakpoints()
   elseif a:data['event'] == 'output'
     echoerr 'The debuggee should be running in a terminal, no output event is expected.'
@@ -383,6 +445,8 @@ function! s:handle_event_stopped_stacktrace(data) abort
 
   exec ':keepalt edit +'.l:line.' '.l:path
   call sign_place(1, 'dap-stopped-group', 'dap-stopped', '%', {'lnum': l:line, 'priority': 11})
+
+  call dap#scopes(s:stopped_stack_frame_id)
 endfunction
 
 function! s:handle_event_breakpoint(body) abort
@@ -512,7 +576,7 @@ endfunction
 " TODO: this won't work until we've received the initialized event, so enforce
 " that.
 function! s:set_breakpoints(buffer, signs) abort
-  if s:job_id == 0
+  if s:job_id == -1
     call dap#log_error('No debugger session running.')
     return
   endif
@@ -536,6 +600,10 @@ function! s:set_breakpoints(buffer, signs) abort
 endfunction
 
 function! s:set_all_breakpoints() abort
+  if s:job_id == -1
+    call dap#log_error('No debugger session running.')
+    return
+  endif
   for l:item in sign_getplaced('', {'group': 'dap-breakpoint-group'})
     call s:set_breakpoints(l:item['bufnr'], l:item['signs'])
   endfor
