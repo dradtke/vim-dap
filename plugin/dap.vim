@@ -2,10 +2,10 @@ if !exists('*json_encode') || !exists('*json_decode')
   finish
 endif
 
-command! DebugStart call dap#start()
-command! DebugStop call dap#disconnect()
+command! DebugRun call dap#run('%')
+command! DebugRunLast call dap#run_last()
 command! Break call dap#toggle_breakpoint('%', '.')
-command! Run call dap#run()
+command! ClearBreakpoints call dap#clear_breakpoints()
 command! Continue call dap#continue_stopped()
 command! Restart call dap#restart()
 command! -nargs=1 Evaluate call dap#evaluate(<args>)

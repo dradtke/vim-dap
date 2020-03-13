@@ -1,6 +1,7 @@
 if !exists('g:dap_initialized')
   let s:job_id = -1
   let s:seq = 1
+  let s:last_buffer = -1
   let s:capabilities = {}
   let s:response_handlers = {}  " unused really, but left here because it may end up being useful
   let s:configuration_done_guard = {}
@@ -9,8 +10,6 @@ if !exists('g:dap_initialized')
   let s:show_var = ''
   let s:launch_args = v:null
   let s:running = v:false
-  let s:start_function = v:null  " client-specific function for starting the debug session
-  let s:run_function = v:null  " client-specific function for launching the debuggee
   let s:scopes = []
   let g:dap_use_vimux = exists('g:loaded_vimux') && g:loaded_vimux
   let g:dap_initialized = v:true
@@ -19,32 +18,28 @@ if !exists('g:dap_initialized')
   call sign_define('dap-stopped', {'text': '⏸'})
 endif
 
-function! dap#set_start_function(start) abort
-  let s:start_function = a:start
-endfunction
-
-function! dap#set_run_function(run) abort
-  let s:run_function = a:run
-endfunction
-
-function! dap#run() abort
-  if s:start_function == v:null
-    echoerr 'No start function defined, must call dap#set_start_function() first.'
-    return
-  endif
-  if s:run_function == v:null
-    echoerr 'No run function defined, must call dap#set_run_function() first.'
-    return
-  endif
-
+function! dap#run(buffer) abort
+  echomsg 'Running '.a:buffer
+  let s:last_buffer = bufnr(a:buffer)
   if s:running
     if s:capabilities['supportsRestartRequest']
       echoerr 'Fancy restart requested, but not implemented yet.'
     endif
     call dap#terminate(v:true)  " TODO: ensure that this restarts the debuggee
   else
-    call s:start_function()
+    if exists('g:LanguageClient_loaded') && g:LanguageClient_loaded
+      call dap#language_client#run(a:buffer)
+    else
+      echoerr 'No supported language client extension installed.'
+    endif
   endif
+endfunction
+
+function! dap#run_last() abort
+  if s:last_buffer == -1
+    throw 'No previous buffer to run.'
+  endif
+  call dap#run(s:last_buffer)
 endfunction
 
 function! dap#connect(host, port) abort
@@ -174,6 +169,10 @@ function! dap#toggle_breakpoint(bufexpr, line) abort
   else
     call sign_unplace('dap-breakpoint-group', {'buffer': l:buffer, 'lnum': l:line})
   endif
+endfunction
+
+function! dap#clear_breakpoints() abort
+  call sign_unplace('dap-breakpoint-group')
 endfunction
 
 function! dap#evaluate(expression) abort
@@ -321,7 +320,7 @@ function! s:handle_response(data) abort
   if l:command == 'initialize'
     call dap#log('Initialization successful')
     let s:capabilities = a:data['body']
-    call s:run_function()
+    call s:handle_initialized()
   elseif l:command == 'launch'
     call s:set_all_breakpoints()
   elseif l:command == 'disconnect'
@@ -360,6 +359,20 @@ function! s:handle_response(data) abort
     call s:handle_variables_response(a:data['body']['variables'])
   else
     echomsg 'Command succeeded: '.l:command
+  endif
+endfunction
+
+function! s:handle_initialized() abort
+  " This method is written under the assumption that what needs to happen
+  " after initialization varies by language. For example, java needs to launch
+  " a VM before setting breakpoints, but other languages may need things done
+  " in a different order.
+  if &filetype == 'java'
+    if exists('g:LanguageClient_loaded') && g:LanguageClient_loaded
+      call dap#language_client#launch(s:last_buffer)
+    else
+      echoerr 'No supported language client extension installed.'
+    endif
   endif
 endfunction
 
@@ -603,6 +616,7 @@ function! s:set_all_breakpoints() abort
         \   'source': { 'path': s:buffer_path(l:item['bufnr']) },
         \   'breakpoints': l:breakpoints,
         \ })
+    " TODO: use closure functions instead?
     let s:configuration_done_guard[l:request['seq']] = v:true
     call add(l:requests, l:request)
   endfor
