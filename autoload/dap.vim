@@ -1,5 +1,9 @@
+" TODO: ensure that a tmux session is running, and/or support internal
+" terminals
+
 if !exists('g:dap_initialized')
   let s:job_id = -1
+  let s:evaluator_job_id = -1
   let s:seq = 1
   let s:last_buffer = -1
   let s:capabilities = {}
@@ -11,15 +15,19 @@ if !exists('g:dap_initialized')
   let s:launch_args = v:null
   let s:running = v:false
   let s:scopes = []
-  let g:dap_use_vimux = exists('g:loaded_vimux') && g:loaded_vimux
+  let g:dap_use_tmux = 1
   let g:dap_initialized = v:true
+
+  let s:filename = expand('<sfile>:p')
 
   call sign_define('dap-breakpoint', {'text': '🛑'})
   call sign_define('dap-stopped', {'text': '⏸'})
 endif
 
 function! dap#run(buffer) abort
-  echomsg 'Running '.a:buffer
+  if str2nr(system('tmux display-message -p "#{window_panes}"')) == 1
+    call s:split_panes()
+  endif
   let s:last_buffer = bufnr(a:buffer)
   if s:running
     if s:capabilities['supportsRestartRequest']
@@ -35,6 +43,10 @@ function! dap#run(buffer) abort
   endif
 endfunction
 
+function! dap#capabilities() abort
+  return s:capabilities
+endfunction
+
 function! dap#run_last() abort
   if s:last_buffer == -1
     throw 'No previous buffer to run.'
@@ -42,7 +54,7 @@ function! dap#run_last() abort
   call dap#run(s:last_buffer)
 endfunction
 
-function! dap#connect(host, port) abort
+function! dap#connect(port) abort
   if !executable('nc')
     echoerr 'command "nc" not found! please install netcat and try again'
     return
@@ -51,11 +63,16 @@ function! dap#connect(host, port) abort
   "  call dap#log_error('Already connected.')
   "  return
   "endif
-  call dap#log('Connecting to debugger at '.a:host.':'.a:port.'...')
-  let s:job_id = dap#async#job#start(['nc', a:host, a:port], {
+  call dap#log('Connecting to debugger on port '.a:port.'...')
+  let s:job_id = dap#async#job#start(['nc', 'localhost', a:port], {
         \ 'on_stdout': function('s:handle_stdout'),
         \ 'on_stderr': function('s:handle_stderr'),
         \ 'on_exit': function('s:handle_exit'),
+        \ })
+
+  let l:evaluator_read = fnamemodify(s:filename, ':h:h').'/evaluator/read.sh'
+  let s:evaluator_job_id = dap#async#job#start(['sh', l:evaluator_read], {
+        \ 'on_stdout': function('s:handle_evaluator_stdout'),
         \ })
   call s:initialize()
 endfunction
@@ -104,6 +121,7 @@ function! dap#continue_stopped() abort
   call dap#continue(s:stopped_thread)
   let s:stopped_thread = -1
   let s:stopped_stack_frame_id = -1
+  call s:quit_eval()
 endfunction
 
 function! dap#next(thread_id) abort
@@ -148,7 +166,7 @@ endfunction
 
 function! dap#terminate(restart) abort
   if s:running
-    call VimuxSendKeys('C-c')
+    call system('tmux C-c')
   endif
   call s:send_message(s:build_request('terminate', {'restart': a:restart}))
 endfunction
@@ -175,8 +193,12 @@ function! dap#clear_breakpoints() abort
   call sign_unplace('dap-breakpoint-group')
 endfunction
 
-function! dap#evaluate(expression) abort
-  let l:body = {'expression': a:expression}
+function! dap#evaluate(...) abort
+  if a:0 == 0
+    call dap#evaluate(input('expression: '))
+    return
+  endif
+  let l:body = {'expression': a:1}
   if s:stopped_stack_frame_id != -1
     let l:body['frameId'] = s:stopped_stack_frame_id
   endif
@@ -223,11 +245,11 @@ endfunction
 
 " TODO: don't echo log messages
 function! dap#log(msg) abort
-  echo a:msg
+  echomsg a:msg
 endfunction
 
 function! dap#log_error(msg) abort
-  echomsg a:msg
+  echoerr a:msg
 endfunction
 
 function! s:reset()
@@ -311,6 +333,8 @@ function! s:handle_response(data) abort
     if l:command == 'initialize'
       call dap#log_error('Initialization failed')
       call s:reset()
+    elseif l:command == 'evaluate'
+      call writefile([a:data['message']], '/tmp/vim-dap-eval-output-result', 'a')
     else
       call dap#log_error('Command failed: '.l:command.': '.a:data['message'])
     endif
@@ -353,6 +377,8 @@ function! s:handle_response(data) abort
     " it.
   elseif l:command == 'evaluate'
     echomsg 'Evaluation result: '.a:data['body']['result']
+    call writefile([a:data['body']['result']], '/tmp/vim-dap-eval-output-result', 'a')
+    " we'll want a separate output fifo for completions probably
   elseif l:command == 'scopes'
     let s:scopes = a:data['body']['scopes']
   elseif l:command == 'variables'
@@ -406,6 +432,7 @@ function! s:handle_event(data) abort
     call s:handle_event_breakpoint(a:data['body'])
   elseif a:data['event'] == 'terminated'
     call dap#async#job#stop(s:job_id)
+    call s:quit_eval()
     call s:reset()
   elseif a:data['event'] == 'exited'
     call s:handle_event_exited(a:data['body']['exitCode'])
@@ -413,6 +440,7 @@ function! s:handle_event(data) abort
 endfunction
 
 function! s:handle_event_stopped(body) abort
+  call s:run_eval()
   if has_key(a:body, 'threadId')
     let s:stopped_thread = a:body['threadId']
     let l:request = s:build_request('stackTrace', {
@@ -503,8 +531,8 @@ function! s:handle_reverse_request(data) abort
     let l:script = '/tmp/vim-dap-debug.sh'
     call writefile(['exec '.l:command], l:script)
     " execute 'terminal '.l:command
-    if g:dap_use_vimux
-      call VimuxRunCommand('clear; sh '.l:script)
+    if g:dap_use_tmux
+      call s:run_debuggee('clear; sh '.l:script)
     else
       " TODO: terminals need to be closed after they exit
       execute 'split | terminal clear; sh '.l:script
@@ -626,6 +654,62 @@ function! s:set_all_breakpoints() abort
   endfor
 endfunction
 
+let s:debuggee_pane = 1
+let s:eval_pane = 2
+
+function! s:split_panes() abort
+  " TODO: make pane sizes configurable
+  call system('tmux split-pane -p 40 -h')
+  call system('tmux split-pane -v')
+  call system('tmux select-pane -t 0')
+endfunction
+
+function! s:run_debuggee(command) abort
+  call system('tmux send-keys -t '.s:debuggee_pane.' "'.a:command.'" Enter')
+endfunction
+
+function! s:run_eval() abort
+  let l:evaluator_write = fnamemodify(s:filename, ':h:h').'/evaluator/write.sh'
+  call system('tmux send-keys -t '.s:eval_pane.' "clear; '.l:evaluator_write.'" Enter')
+endfunction
+
+function! s:quit_eval() abort
+  call system('clear; tmux send-keys -t '.s:eval_pane.' ":exit" Enter')
+endfunction
+
 function! dap#get_job_id() abort
   return s:job_id
+endfunction
+
+let s:evaluator_buffer = ''
+
+function! s:handle_evaluator_stdout(job_id, data, event_type) abort
+  let s:evaluator_buffer .= join(a:data, "")
+  let l:colon = stridx(s:evaluator_buffer, ':')
+  if l:colon == -1
+    return
+  endif
+  let l:parts = split(s:evaluator_buffer, ':')
+  let l:len = str2nr(l:parts[0])
+  let l:rest = l:parts[1]
+  if len(l:rest) < l:len
+    return
+  endif
+
+  let l:expr = l:rest[:l:len]
+  let s:evaluator_buffer = s:evaluator_buffer[len(l:parts[0])+1+l:len:]
+
+  let l:action = l:expr[0]
+  let l:text = l:expr[1:]
+
+  if empty(l:text)
+    return
+  endif
+
+  if l:action == '!'
+    echomsg 'evaluating '.l:text
+    call dap#evaluate(l:text)
+  elseif l:action == '?'
+    echoerr 'Completions not supported yet.'
+  endif
 endfunction

@@ -4,7 +4,7 @@ function! dap#language_client#run(buffer)
     function! s:start_callback(data) closure
       if has_key(a:data, 'result')
         let l:port = a:data['result']
-        call dap#connect('localhost', l:port)
+        call dap#connect(l:port)
       elseif has_key(a:data, 'error')
         echoerr a:data['error']['message']
       else
