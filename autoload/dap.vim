@@ -1,5 +1,7 @@
 " TODO: ensure that a tmux session is running, and/or support internal
 " terminals
+"
+" TODO: clean up temp files before and/or after?
 
 if !exists('g:dap_initialized')
   let s:job_id = -1
@@ -121,7 +123,6 @@ function! dap#continue_stopped() abort
   call dap#continue(s:stopped_thread)
   let s:stopped_thread = -1
   let s:stopped_stack_frame_id = -1
-  call s:quit_eval()
 endfunction
 
 function! dap#next(thread_id) abort
@@ -205,6 +206,14 @@ function! dap#evaluate(...) abort
   call s:send_message(s:build_request('evaluate', l:body))
 endfunction
 
+function! dap#completions(text, column) abort
+  let l:body = {'text': a:text, 'column': a:column}
+  if s:stopped_stack_frame_id != -1
+    let l:body['frameId'] = s:stopped_stack_frame_id
+  endif
+  call s:send_message(s:build_request('completions', l:body))
+endfunction
+
 function! dap#scopes(frame_id) abort
   let l:body = {'frameId': a:frame_id}
   call s:send_message(s:build_request('scopes', l:body))
@@ -256,8 +265,6 @@ function! s:reset()
   let s:job_id = -1
   let s:seq = 1
 endfunction
-
-" TODO: better handle input coming in in weird batches
 
 function! s:parse_message(data) abort
   let l:split_index = stridx(a:data, "\r\n\r\n")
@@ -335,6 +342,8 @@ function! s:handle_response(data) abort
       call s:reset()
     elseif l:command == 'evaluate'
       call writefile([a:data['message']], '/tmp/vim-dap-eval-output-result', 'a')
+    elseif l:command == 'completions'
+      call writefile([a:data['message']], '/tmp/vim-dap-eval-output-completion', 'a')
     else
       call dap#log_error('Command failed: '.l:command.': '.a:data['message'])
     endif
@@ -376,9 +385,11 @@ function! s:handle_response(data) abort
     " seem to include source information, so we can't really do anything about
     " it.
   elseif l:command == 'evaluate'
-    echomsg 'Evaluation result: '.a:data['body']['result']
     call writefile([a:data['body']['result']], '/tmp/vim-dap-eval-output-result', 'a')
-    " we'll want a separate output fifo for completions probably
+  elseif l:command == 'completions'
+    for l:target in a:data['body']['targets']
+      call writefile([l:target['label']], '/tmp/vim-dap-eval-output-completion', 'a')
+    endfor
   elseif l:command == 'scopes'
     let s:scopes = a:data['body']['scopes']
   elseif l:command == 'variables'
@@ -400,6 +411,7 @@ function! s:handle_initialized() abort
       echoerr 'No supported language client extension installed.'
     endif
   endif
+  call s:run_eval()
 endfunction
 
 function! s:handle_variables_response(variables) abort
@@ -440,7 +452,6 @@ function! s:handle_event(data) abort
 endfunction
 
 function! s:handle_event_stopped(body) abort
-  call s:run_eval()
   if has_key(a:body, 'threadId')
     let s:stopped_thread = a:body['threadId']
     let l:request = s:build_request('stackTrace', {
@@ -669,12 +680,14 @@ function! s:run_debuggee(command) abort
 endfunction
 
 function! s:run_eval() abort
-  let l:evaluator_write = fnamemodify(s:filename, ':h:h').'/evaluator/write.sh'
-  call system('tmux send-keys -t '.s:eval_pane.' "clear; '.l:evaluator_write.'" Enter')
+  let l:dir = fnamemodify(s:filename, ':h:h').'/evaluator/console/'
+  call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.l:dir.' && go run main.go)" Enter')
 endfunction
 
 function! s:quit_eval() abort
-  call system('clear; tmux send-keys -t '.s:eval_pane.' ":exit" Enter')
+  let l:pid = readfile('/tmp/vim-dap-eval-console-pid')[0]
+  echomsg 'killing console '.l:pid
+  call system('kill -SIGTERM '.l:pid)
 endfunction
 
 function! dap#get_job_id() abort
@@ -697,6 +710,7 @@ function! s:handle_evaluator_stdout(job_id, data, event_type) abort
   endif
 
   let l:expr = l:rest[:l:len]
+  echomsg 'received expr: '.l:expr
   let s:evaluator_buffer = s:evaluator_buffer[len(l:parts[0])+1+l:len:]
 
   let l:action = l:expr[0]
@@ -707,8 +721,13 @@ function! s:handle_evaluator_stdout(job_id, data, event_type) abort
   endif
 
   if l:action == '!'
-    echomsg 'evaluating '.l:text
-    call dap#evaluate(l:text)
+    let l:equals = stridx(l:text, '=')
+    if l:equals == -1
+      call dap#evaluate(l:text)
+    else
+      let l:left_and_right = split(l:text, '=')
+      call dap#set_expression(trim(l:left_and_right[0]), trim(l:left_and_right[1]))
+    endif
   elseif l:action == '?'
     echoerr 'Completions not supported yet.'
   endif

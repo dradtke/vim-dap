@@ -1,39 +1,28 @@
 #!/usr/bin/env bash
 
+echo "$$" > /tmp/vim-dap-eval-console-pid
+
 # TODO: support completions by writing to input with a "?" prefix
 input_socket=/tmp/vim-dap-eval-input
 output_result_socket=/tmp/vim-dap-eval-output-result
 output_completion_socket=/tmp/vim-dap-eval-output-completion
 
-if [ ! -e "${input_socket}" ]; then
-  mkfifo "${input_socket}"
-fi
-if [ ! -e "${output_result_socket}" ]; then
-  mkfifo "${output_result_socket}"
-fi
-if [ ! -e "${output_completion_socket}" ]; then
-  mkfifo "${output_completion_socket}"
-fi
-
-good_input=1
+rm -f "${output_result_socket}"; mkfifo "${output_result_socket}"
+rm -f "${output_completion_socket}"; mkfifo "${output_completion_socket}"
 
 ctrl_c() {
-  good_input=0
-  # This isn't ideal, since the read still hangs, but I'm not sure how to tell it to quit.
+  echo 'interrupt'
 }
 
 trap ctrl_c SIGINT
 
-history -r /tmp/vim-dap-eval-history
 while true; do
-  read -e -p "Debug Console> " line
+  echo -n 'Debug Console> '
+  line="$(head -n1 /dev/stdin)"
   status=$?
-  if [[ ${good_input} -eq 0 ]]; then
-    good_input=1
-    continue
-  fi
   if [[ ${status} -ne 0 ]]; then
-    exit $?
+    echo "exiting with ${status} (current line: $(cat /dev/stdin))"
+    exit "${status}"
   fi
   line=$(echo "${line}" | sed 's/^ *//g' | sed 's/ *$//g')
   if [[ -z "${line}" ]]; then
@@ -43,7 +32,6 @@ while true; do
     break
   fi
   length="${#line}"
-  history -s "${line}"
   echo "$(( ${length} + 1 )):!${line}" > "${input_socket}"
   cat "${output_result_socket}"
 done
