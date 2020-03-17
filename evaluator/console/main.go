@@ -16,10 +16,12 @@ import (
 )
 
 const (
-	pidFilepath              = "/tmp/vim-dap-eval-console-pid"
-	inputFilepath            = "/tmp/vim-dap-eval-input"
-	outputResultFilepath     = "/tmp/vim-dap-eval-output-result"
-	outputCompletionFilepath = "/tmp/vim-dap-eval-output-completion"
+	temp                     = "/tmp/vim-dap"
+	pidFilepath              = temp + "/eval-console.pid"
+	inputFilepath            = temp + "/eval-input.pipe"
+	outputResultFilepath     = temp + "/eval-result.pipe"
+	outputCompletionFilepath = temp + "/eval-completion.pipe"
+	logFilepath              = temp + "/eval-console.log"
 )
 
 var (
@@ -46,7 +48,7 @@ func main() {
 		completions = ch
 	}
 
-	if f, err := os.Create("/tmp/vim-dap-eval-console.log"); err != nil {
+	if f, err := os.Create(logFilepath); err != nil {
 		log.Fatal(err)
 	} else {
 		log.SetOutput(f)

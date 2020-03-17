@@ -4,7 +4,7 @@
 # whenever there's new data.
 #
 
-input_socket=/tmp/vim-dap-eval-input
+input_socket=/tmp/vim-dap/eval-input.pipe
 
 rm -f "${input_socket}"
 mkfifo "${input_socket}"

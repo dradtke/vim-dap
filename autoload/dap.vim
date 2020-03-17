@@ -23,6 +23,11 @@ if !exists('g:dap_initialized')
 
   call sign_define('dap-breakpoint', {'text': '🛑'})
   call sign_define('dap-stopped', {'text': '⏸'})
+
+  let s:temp = '/tmp/vim-dap'
+  if !isdirectory(s:temp)
+    call mkdir(s:temp)
+  endif
 endif
 
 function! dap#run(buffer) abort
@@ -340,9 +345,9 @@ function! s:handle_response(data) abort
       call dap#log_error('Initialization failed')
       call s:reset()
     elseif l:command == 'evaluate'
-      call writefile([a:data['message']], '/tmp/vim-dap-eval-output-result', 'a')
+      call writefile([a:data['message']], s:temp.'/eval-result.pipe', 'a')
     elseif l:command == 'completions'
-      call writefile([a:data['message']], '/tmp/vim-dap-eval-output-completion', 'a')
+      call writefile([a:data['message']], s:temp.'/eval-completion.pipe', 'a')
     else
       call dap#log_error('Command failed: '.l:command.': '.a:data['message'])
     endif
@@ -384,11 +389,11 @@ function! s:handle_response(data) abort
     " seem to include source information, so we can't really do anything about
     " it.
   elseif l:command == 'evaluate'
-    call writefile([a:data['body']['result']], '/tmp/vim-dap-eval-output-result', 'a')
+    call writefile([a:data['body']['result']], s:temp.'/eval-result.pipe', 'a')
   elseif l:command == 'completions'
     let l:completion_items = a:data['body']['targets']
     let g:completion_items = l:completion_items
-    call writefile([json_encode(l:completion_items)], '/tmp/vim-dap-eval-output-completion', 'a')
+    call writefile([json_encode(l:completion_items)], s:temp.'/eval-completion.pipe', 'a')
   elseif l:command == 'scopes'
     let s:scopes = a:data['body']['scopes']
   elseif l:command == 'variables'
@@ -538,7 +543,7 @@ function! s:handle_reverse_request(data) abort
       let l:command = l:env.' '.l:command
     endif
 
-    let l:script = '/tmp/vim-dap-debug.sh'
+    let l:script = s:temp.'/debug.sh'
     call writefile(['exec '.l:command], l:script)
     " execute 'terminal '.l:command
     if g:dap_use_tmux
@@ -687,9 +692,9 @@ endfunction
 function! s:quit_eval() abort
   " the pid file may not exist if the program hasn't written it yet by the
   " time tests finish, so just be defensive.
-  if filereadable('/tmp/vim-dap-eval-console-pid')
-    let l:pid = readfile('/tmp/vim-dap-eval-console-pid')[0]
-    echomsg 'killing console '.l:pid
+  let l:pid_file = s:temp.'/eval-console.pid'
+  if filereadable(l:pid_file)
+    let l:pid = readfile(l:pid_file)[0]
     call system('kill -SIGTERM '.l:pid)
   endif
 endfunction
