@@ -1,14 +1,15 @@
 package main
 
 import (
-	"bufio"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
+	"unicode"
 
 	"github.com/abiosoft/readline"
 	"gopkg.in/abiosoft/ishell.v2"
@@ -22,28 +23,39 @@ const (
 )
 
 var (
-	inputSocket    *os.File
-	resultListener net.Listener
-	resultScanner  *bufio.Scanner
+	inputSocket *os.File
+	results     chan string
+	completions chan string
 )
 
 func main() {
-	log.Println("writing pid...")
 	if err := writePid(); err != nil {
 		log.Fatal(err)
 	}
-	log.Println("opening input socket...")
 	if err := openInputSocket(); err != nil {
 		log.Fatal(err)
 	}
-	log.Println("opening result socket...")
-	if err := openResultListener(); err != nil {
+	if ch, err := readFifo(outputResultFilepath); err != nil {
 		log.Fatal(err)
+	} else {
+		results = ch
+	}
+	if ch, err := readFifo(outputCompletionFilepath); err != nil {
+		log.Fatal(err)
+	} else {
+		completions = ch
 	}
 
-	log.Println("running shell...")
+	if f, err := os.Create("/tmp/vim-dap-eval-console.log"); err != nil {
+		log.Fatal(err)
+	} else {
+		log.SetOutput(f)
+		defer f.Close()
+	}
+
 	shell := ishell.NewWithConfig(&readline.Config{Prompt: "Debug Console> "})
 	shell.NotFound(handler)
+	shell.CustomCompleter(completer{})
 	shell.Run()
 }
 
@@ -63,46 +75,78 @@ func openInputSocket() error {
 	return nil
 }
 
-func openResultListener() error {
-	os.Remove(outputResultFilepath)
-	var err error
-	if resultListener, err = net.Listen("unix", outputResultFilepath); err != nil {
-		return fmt.Errorf("failed to open result socket: %s", err)
+func readFifo(path string) (chan string, error) {
+	os.Remove(path)
+	if err := syscall.Mkfifo(path, 0644); err != nil {
+		return nil, fmt.Errorf("failed to make fifo: %s", err)
 	}
+	ch := make(chan string)
 	go func() {
 		for {
-			conn, err := resultListener.Accept()
+			b, err := ioutil.ReadFile(path)
 			if err != nil {
-				log.Fatalf("failed to accept result connection: %s", err)
+				log.Fatalf("failed to read from fifo: %s", err)
 			}
-			log.Printf("received result connection")
-			go func(c net.Conn) {
-				b, err := ioutil.ReadAll(c)
-				c.Close()
-				if err != nil {
-					log.Fatalf("failed to read connection data: %s", err)
-				}
-				fmt.Println("result data: " + string(b))
-			}(conn)
+			ch <- strings.TrimSpace(string(b))
 		}
 	}()
-	return nil
+	return ch, nil
+}
+
+func writeInput(action rune, line string) {
+	expr := string(action) + line
+	s := fmt.Sprintf("%d:%s\n", len(expr), expr)
+	if _, err := inputSocket.WriteString(s); err != nil {
+		log.Fatalf("failed to write to input socket: %s", err)
+	}
 }
 
 func handler(c *ishell.Context) {
-	s := strings.Join(c.RawArgs, " ")
-	if _, err := inputSocket.WriteString("!" + s + "\n"); err != nil {
-		log.Fatalf("failed to write to input socket: %s", err)
-	}
-	/*
-		if resultScanner.Scan() {
-			fmt.Println(resultScanner.Text())
-		} else {
-			if resultScanner.Err() != nil {
-				log.Fatalf("failed to read from result socket: %s", resultScanner.Err())
-			} else {
-				log.Fatal("result socket EOF")
-			}
+	writeInput('!', strings.Join(c.RawArgs, " "))
+	fmt.Println(<-results)
+}
+
+type completer struct{}
+
+// NOTE: this function currently assumes that we are only completing the current word,
+// which is defined as the first non-alphanumeric character before pos (exclusive) up
+// to pos.
+func (c completer) Do(line []rune, pos int) ([][]rune, int) {
+	writeInput('?', strconv.Itoa(pos)+"|"+string(line))
+
+	wordBreak := -1
+	for i := pos - 1; i >= 0; i-- {
+		if !unicode.IsLetter(line[i]) && !unicode.IsDigit(line[i]) {
+			wordBreak = i
+			break
 		}
-	*/
+	}
+	prefix := string(line[wordBreak+1 : pos])
+
+	var items []map[string]interface{}
+	if err := json.Unmarshal([]byte(<-completions), &items); err != nil {
+		log.Fatalf("failed to parse completion items: %s", err)
+	}
+
+	if len(items) == 0 {
+		return nil, 0
+	}
+
+	var newLine [][]rune
+	for _, item := range items {
+		var text string
+		if item["text"] != nil {
+			text = item["text"].(string)
+		} else if item["label"] != nil {
+			text = item["label"].(string)
+		} else {
+			continue
+		}
+		if strings.HasPrefix(text, prefix) {
+			rest := text[len(prefix):]
+			newLine = append(newLine, []rune(rest))
+		}
+	}
+
+	return newLine, len(prefix)
 }

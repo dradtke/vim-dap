@@ -73,7 +73,7 @@ function! dap#connect(port) abort
         \ })
 
   let l:evaluator_read = fnamemodify(s:filename, ':h:h').'/evaluator/read.sh'
-  let s:evaluator_job_id = dap#async#job#start(['sh', l:evaluator_read], {
+  let s:evaluator_job_id = dap#async#job#start([l:evaluator_read], {
         \ 'on_stdout': function('s:handle_evaluator_stdout'),
         \ })
   call s:initialize()
@@ -387,9 +387,9 @@ function! s:handle_response(data) abort
   elseif l:command == 'evaluate'
     call writefile([a:data['body']['result']], '/tmp/vim-dap-eval-output-result', 'a')
   elseif l:command == 'completions'
-    for l:target in a:data['body']['targets']
-      call writefile([l:target['label']], '/tmp/vim-dap-eval-output-completion', 'a')
-    endfor
+    let l:completion_items = a:data['body']['targets']
+    let g:completion_items = l:completion_items
+    call writefile([json_encode(l:completion_items)], '/tmp/vim-dap-eval-output-completion', 'a')
   elseif l:command == 'scopes'
     let s:scopes = a:data['body']['scopes']
   elseif l:command == 'variables'
@@ -601,6 +601,7 @@ function! s:add_response_handler(request, handler) abort
 endfunction
 
 function! s:initialize() abort
+  echomsg 'Initializing debug adapter...'
   " TODO: support other arguments?
   call s:send_message(s:build_request('initialize', {
         \ 'adapterID': 'vim-dap',
@@ -685,9 +686,13 @@ function! s:run_eval() abort
 endfunction
 
 function! s:quit_eval() abort
-  let l:pid = readfile('/tmp/vim-dap-eval-console-pid')[0]
-  echomsg 'killing console '.l:pid
-  call system('kill -SIGTERM '.l:pid)
+  " the pid file may not exist if the program hasn't written it yet by the
+  " time tests finish, so just be defensive.
+  if filereadable('/tmp/vim-dap-eval-console-pid')
+    let l:pid = readfile('/tmp/vim-dap-eval-console-pid')[0]
+    echomsg 'killing console '.l:pid
+    call system('kill -SIGTERM '.l:pid)
+  endif
 endfunction
 
 function! dap#get_job_id() abort
@@ -698,19 +703,21 @@ let s:evaluator_buffer = ''
 
 function! s:handle_evaluator_stdout(job_id, data, event_type) abort
   let s:evaluator_buffer .= join(a:data, "")
+  echomsg 'expression buffer: '.s:evaluator_buffer
   let l:colon = stridx(s:evaluator_buffer, ':')
   if l:colon == -1
     return
   endif
   let l:parts = split(s:evaluator_buffer, ':')
+  echomsg 'wanted length: '.l:parts[0]
   let l:len = str2nr(l:parts[0])
+  echomsg 'got length: '.l:len
   let l:rest = l:parts[1]
   if len(l:rest) < l:len
     return
   endif
 
   let l:expr = l:rest[:l:len]
-  echomsg 'received expr: '.l:expr
   let s:evaluator_buffer = s:evaluator_buffer[len(l:parts[0])+1+l:len:]
 
   let l:action = l:expr[0]
@@ -721,14 +728,11 @@ function! s:handle_evaluator_stdout(job_id, data, event_type) abort
   endif
 
   if l:action == '!'
-    let l:equals = stridx(l:text, '=')
-    if l:equals == -1
-      call dap#evaluate(l:text)
-    else
-      let l:left_and_right = split(l:text, '=')
-      call dap#set_expression(trim(l:left_and_right[0]), trim(l:left_and_right[1]))
-    endif
+    call dap#evaluate(l:text)
   elseif l:action == '?'
-    echoerr 'Completions not supported yet.'
+    let l:cursor_delim = stridx(l:text, '|')
+    let l:cursor_pos = str2nr(l:text[:l:cursor_delim-1])
+    let l:line = l:text[l:cursor_delim+1:]
+    call dap#completions(l:line, l:cursor_pos)
   endif
 endfunction
