@@ -19,8 +19,7 @@ if !exists('g:dap_initialized')
   let s:scopes = []
   let g:dap_use_tmux = 1
   let g:dap_initialized = v:true
-
-  let s:filename = expand('<sfile>:p')
+  let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h')
 
   call sign_define('dap-breakpoint', {'text': '🛑'})
   call sign_define('dap-stopped', {'text': '⏸'})
@@ -72,7 +71,7 @@ function! dap#connect(port) abort
         \ 'on_exit': function('s:handle_exit'),
         \ })
 
-  let l:evaluator_read = fnamemodify(s:filename, ':h:h').'/evaluator/read.sh'
+  let l:evaluator_read = s:plugin_home.'/evaluator/read.sh'
   let s:evaluator_job_id = dap#async#job#start([l:evaluator_read], {
         \ 'on_stdout': function('s:handle_evaluator_stdout'),
         \ })
@@ -681,8 +680,8 @@ function! s:run_debuggee(command) abort
 endfunction
 
 function! s:run_eval() abort
-  let l:dir = fnamemodify(s:filename, ':h:h').'/evaluator/console/'
-  call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.l:dir.' && go run main.go)" Enter')
+  let l:dir = s:plugin_home.'/evaluator/console/'
+  call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.l:dir.' && ./main)" Enter')
 endfunction
 
 function! s:quit_eval() abort
