@@ -685,8 +685,7 @@ function! s:run_debuggee(command) abort
 endfunction
 
 function! s:run_eval() abort
-  let l:dir = s:plugin_home.'/evaluator/console/'
-  call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.l:dir.' && ./main)" Enter')
+  call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.s:plugin_home.' && ./bin/console)" Enter')
 endfunction
 
 function! s:quit_eval() abort
