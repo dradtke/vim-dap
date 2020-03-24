@@ -11,8 +11,6 @@ if !exists('g:dap_initialized')
   let s:capabilities = {}
   let s:response_handlers = {}  " unused really, but left here because it may end up being useful
   let s:configuration_done_guard = {}
-  let s:scopes_guard = {}
-  let s:scopes_result = {}
   let s:stopped_thread = -1
   let s:stopped_stack_frame_id = -1
   let s:show_var = ''
@@ -89,7 +87,7 @@ function! dap#disconnect() abort
     call dap#log_error('No connection to disconnect from.')
     return
   endif
-  call s:send_message(s:build_request('disconnect', {}))
+  call dap#send_message(dap#build_request('disconnect', {}))
 endfunction
 
 function! dap#get_capabilities() abort
@@ -107,17 +105,17 @@ function! dap#launch(arguments) abort
     echoerr 'No debug session running.'
     return
   endif
-  call s:send_message(s:build_request('launch', a:arguments))
+  call dap#send_message(dap#build_request('launch', a:arguments))
 endfunction
 
 function! dap#threads() abort
-  call s:send_message(s:build_request('threads', v:null))
+  call dap#send_message(dap#build_request('threads', v:null))
 endfunction
 
 function! dap#continue(thread_id) abort
   call s:set_all_breakpoints()
   call sign_unplace('dap-stopped-group')
-  call s:send_message(s:build_request('continue', {'threadId': a:thread_id}))
+  call dap#send_message(dap#build_request('continue', {'threadId': a:thread_id}))
 endfunction
 
 function! dap#continue_stopped() abort
@@ -132,7 +130,7 @@ endfunction
 
 function! dap#next(thread_id) abort
   call sign_unplace('dap-stopped-group')
-  call s:send_message(s:build_request('next', {'threadId': a:thread_id}))
+  call dap#send_message(dap#build_request('next', {'threadId': a:thread_id}))
 endfunction
 
 function! dap#next_stopped() abort
@@ -146,7 +144,7 @@ endfunction
 function! dap#step_in(thread_id) abort
   " TODO: support step-in targets
   call sign_unplace('dap-stopped-group')
-  call s:send_message(s:build_request('stepIn', {'threadId': a:thread_id}))
+  call dap#send_message(dap#build_request('stepIn', {'threadId': a:thread_id}))
 endfunction
 
 function! dap#step_in_stopped() abort
@@ -159,7 +157,7 @@ endfunction
 
 function! dap#step_out(thread_id) abort
   call sign_unplace('dap-stopped-group')
-  call s:send_message(s:build_request('stepOut', {'threadId': a:thread_id}))
+  call dap#send_message(dap#build_request('stepOut', {'threadId': a:thread_id}))
 endfunction
 
 function! dap#step_out_stopped() abort
@@ -174,7 +172,7 @@ function! dap#terminate(restart) abort
   if s:running
     call system('tmux C-c')
   endif
-  call s:send_message(s:build_request('terminate', {'restart': a:restart}))
+  call dap#send_message(dap#build_request('terminate', {'restart': a:restart}))
 endfunction
 
 function! s:buffer_path(buffer) abort
@@ -208,7 +206,7 @@ function! dap#evaluate(...) abort
   if s:stopped_stack_frame_id != -1
     let l:body['frameId'] = s:stopped_stack_frame_id
   endif
-  call s:send_message(s:build_request('evaluate', l:body))
+  call dap#send_message(dap#build_request('evaluate', l:body))
 endfunction
 
 function! dap#completions(text, column) abort
@@ -216,37 +214,12 @@ function! dap#completions(text, column) abort
   if s:stopped_stack_frame_id != -1
     let l:body['frameId'] = s:stopped_stack_frame_id
   endif
-  call s:send_message(s:build_request('completions', l:body))
-endfunction
-
-function! dap#scopes(frame_id) abort
-  let l:body = {'frameId': a:frame_id}
-  call s:send_message(s:build_request('scopes', l:body))
-endfunction
-
-function! dap#show_scope(name) abort
-  let s:show_var = ''
-  call s:show_scope(a:name)
-endfunction
-
-function! dap#show_scope_var(name, var) abort
-  let s:show_var = a:var
-  call s:show_scope(a:name)
-endfunction
-
-function! s:show_scope(name) abort
-  for l:scope in s:scopes
-    if l:scope['name'] == a:name
-      call dap#variables(l:scope['variablesReference'])
-      return
-    endif
-  endfor
-  echoerr 'No scope found for name: '.a:name
+  call dap#send_message(dap#build_request('completions', l:body))
 endfunction
 
 function! dap#variables(ref) abort
   let l:body = {'variablesReference': a:ref}
-  call s:send_message(s:build_request('variables', l:body))
+  call dap#send_message(dap#build_request('variables', l:body))
 endfunction
 
 " TODO: don't echo log messages
@@ -338,9 +311,9 @@ function! s:handle_response(data) abort
       call dap#log_error('Initialization failed')
       call s:reset()
     elseif l:command == 'evaluate'
-      call s:write_result(a:data['message'])
+      call dap#write_result(a:data['message'])
     elseif l:command == 'completions'
-      call s:write_completion(a:data['message'])
+      call dap#write_completion(a:data['message'])
     else
       call dap#log_error('Command failed: '.l:command.': '.a:data['message'])
     endif
@@ -376,36 +349,24 @@ function! s:handle_response(data) abort
   elseif l:command == 'setBreakpoints'
     unlet s:configuration_done_guard[l:request_seq]
     if empty(s:configuration_done_guard)
-      call s:send_message(s:build_request('configurationDone', {}))
+      call dap#send_message(dap#build_request('configurationDone', {}))
     endif
     " TODO: it would be nice to remove unverified breakpoints, but they don't
     " seem to include source information, so we can't really do anything about
     " it.
   elseif l:command == 'evaluate'
-    call s:write_result(a:data['body']['result'])
+    call dap#write_result(a:data['body']['result'])
   elseif l:command == 'scopes'
-    let s:scopes_guard = {}
-    let s:scopes_result = {}
-    let l:var_requests = []
-    for l:scope in a:data['body']['scopes']
-      let l:request = s:build_request('variables', {'variablesReference': l:scope['variablesReference']})
-      let s:scopes_guard[l:request['seq']] = l:scope['name']
-      call add(l:var_requests, l:request)
-    endfor
-    for l:request in l:var_requests
-      call s:send_message(l:request)
-    endfor
+    call dap#scopes#response(a:data)
   elseif l:command == 'completions'
     let l:completion_items = a:data['body']['targets']
     let g:completion_items = l:completion_items
-    call s:write_completion(json_encode(l:completion_items))
+    call dap#write_completion(json_encode(l:completion_items))
   elseif l:command == 'variables'
-    if has_key(s:scopes_guard, l:request_seq)
-      let l:scope_name = s:scopes_guard[l:request_seq]
-      let s:scopes_result[l:scope_name] = a:data['body']['variables']
-      if len(s:scopes_guard) == len(s:scopes_result)
-        call s:write_result(json_encode(s:scopes_result))
-      endif
+    " A scopes request automatically retrieves its variables, so if this
+    " request was part of a scope request, handle it accordingly.
+    if dap#scopes#waiting_for(l:request_seq)
+      call dap#scopes#variables_response(a:data)
     endif
   else
     echomsg 'Command succeeded: '.l:command
@@ -450,13 +411,13 @@ endfunction
 function! s:handle_event_stopped(body) abort
   if has_key(a:body, 'threadId')
     let s:stopped_thread = a:body['threadId']
-    let l:request = s:build_request('stackTrace', {
+    let l:request = dap#build_request('stackTrace', {
           \ 'threadId': s:stopped_thread,
           \ 'levels': 1,
           \ 'format': {'line': v:true},
           \ })
     call s:add_response_handler(l:request, function('s:handle_event_stopped_stacktrace'))
-    call s:send_message(l:request)
+    call dap#send_message(l:request)
   endif
   let l:reason = a:body['reason']
   if l:reason == 'breakpoint'
@@ -543,7 +504,7 @@ function! s:handle_reverse_request(data) abort
       execute 'split | terminal clear; sh '.l:script
     endif
     let l:pid = trim(system('pgrep -f "sh '.l:script.'"'))
-    call s:send_message(s:build_response(a:data, v:true, {'processId': l:pid}))
+    call dap#send_message(s:build_response(a:data, v:true, {'processId': l:pid}))
   endif
 endfunction
 
@@ -555,13 +516,13 @@ function! s:handle_exit(job_id, data, event_type) abort
   " no op
 endfunction
 
-function! s:send_message(body) abort
+function! dap#send_message(body) abort
   let l:encoded_body = json_encode(a:body)
   let l:content_length = strlen(l:encoded_body)
   call dap#async#job#send(s:job_id, "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body)
 endfunction
 
-function! s:build_request(command, arguments) abort
+function! dap#build_request(command, arguments) abort
   let l:request = {
         \ 'seq': s:seq,
         \ 'type': 'request',
@@ -597,7 +558,7 @@ endfunction
 function! s:initialize() abort
   echomsg 'Initializing debug adapter...'
   " TODO: support other arguments?
-  call s:send_message(s:build_request('initialize', {
+  call dap#send_message(dap#build_request('initialize', {
         \ 'adapterID': 'vim-dap',
         \ 'pathFormat': 'path',
         \ 'linesStartAt1': v:true,
@@ -625,7 +586,7 @@ function! s:set_breakpoints(buffer, signs) abort
         \ }
   let s:seq = s:seq+1
 
-  call s:send_message(l:request)
+  call dap#send_message(l:request)
 endfunction
 
 function! s:set_all_breakpoints() abort
@@ -646,7 +607,7 @@ function! s:set_all_breakpoints() abort
     for l:sign in l:item['signs']
       call add(l:breakpoints, {'line': l:sign['lnum']})
     endfor
-    let l:request = s:build_request('setBreakpoints', {
+    let l:request = dap#build_request('setBreakpoints', {
         \   'source': { 'path': s:buffer_path(l:item['bufnr']) },
         \   'breakpoints': l:breakpoints,
         \ })
@@ -656,7 +617,7 @@ function! s:set_all_breakpoints() abort
   endfor
 
   for l:request in l:requests
-    call s:send_message(l:request)
+    call dap#send_message(l:request)
   endfor
 endfunction
 
@@ -736,14 +697,14 @@ function! s:console_command(command) abort
   if a:command == 'continue'
     call dap#continue_stopped()
   elseif a:command == 'scopes'
-    call dap#scopes(s:stopped_stack_frame_id)
+    call dap#scopes#request(s:stopped_stack_frame_id)
   endif
 endfunction
 
-function! s:write_result(data) abort
+function! dap#write_result(data) abort
   call writefile([a:data], s:temp.'/eval-result.pipe', 'a')
 endfunction
 
-function! s:write_completion(data) abort
+function! dap#write_completion(data) abort
   call writefile([a:data], s:temp.'/eval-completion.pipe', 'a')
 endfunction
