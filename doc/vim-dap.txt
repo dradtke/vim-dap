@@ -1,0 +1,63 @@
+*vim-dap.txt*	Terminal-based Debug Adapter Protocol for Vim
+
+CONTENTS                                                      *vim-dap-contents*
+
+    1.Intro...................................|vim-dap|
+    2.Requirements............................|vim-dap-requirements|
+
+==============================================================================
+
+1. Intro                                                              *vim-dap*
+
+This plugin gives Vim debugging capabilities via the Debug Adapter Protocol
+and an interactive shell for executing debugger functions.  This differs from
+most other Vim debugger plugins in that it doesn't attempt to replicate the UI
+of an IDE, leaving your Vim instance free of clutter.
+
+As of writing, it is assumed that you are running Vim inside of tmux.  In the
+future, it should be possible to provide support for Vim's integrated terminal
+as well, though it is not available currently.
+
+The workflow generally goes something like this:
+
+1. Start your language server and ensure that it's running. You will need to
+   have a supported language server client installed in order to use the
+   debugger (more on supported clients later).
+2. Set any number of breakpoints using the `:Break` command.
+3. Run your program in the debugger by executing the `dap#run()` function.
+
+If you only have one tmux split in your current pane, two splits will be
+opened: one to run the debuggee, and one to run the interactive Debug Console.
+
+
+2. Requirements					          *vim-dap-requirements*
+
+There are a few different requirements that need to be met in order to use
+`vim-dap`, and while it is currently pretty restrictive, some of these should
+be easy to expand in order to add support for more use-cases and development
+environments.
+
+1. Vim or Neovim with async job control support.  This plugin uses async.vim
+   under the hood to communicate with external processes, so your Vim version
+   must support job control.
+2. Named pipes. These are used for communication between the interactive Debug
+   Console and Vim, so your system must support these.  If you can run the
+   `mkfifo` command, then you're good to go.
+3. You must be running 64-bit Linux, or be able to compile the Debug Console
+   yourself, which is written in Go. Fortunately, Go supports easy
+   cross-compilation of binaries, but I don't plan on creating pre-built
+   binaries for other systems until things have stabilized a bit.
+4. You must have installed a supported LSP client. Currently only
+   LanguageClient-neovim is supported, but it should be easy to add support
+   for additional clients.
+5. Lastly, you must be working on a Java project. The Debug Adapter Protocol
+   supports many languages, but the setup for each one may be different, and
+   the commands currently implemented here for starting the debug adapter are
+   currently hard-coded to the one provided by Eclipse/Microsoft for Java
+   development.  This is absolutely a temporary state of affairs, and I hope
+   to be able to make this plugin as language-agnostic as possible in the
+   future.
+
+------------------------------------------------------------------------------
+ vim:tw=78:ts=8:ft=help:noet:nospell
+
