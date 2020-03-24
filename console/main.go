@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/abiosoft/readline"
+	"github.com/fatih/color"
 	"gopkg.in/abiosoft/ishell.v2"
 )
 
@@ -28,9 +30,35 @@ var (
 	inputSocket *os.File
 	results     chan string
 	completions chan string
+
+	commands = []*ishell.Cmd{
+		&ishell.Cmd{
+			Name:    "continue",
+			Aliases: []string{"c"},
+			Help:    "continue execution after stopping",
+			Func:    cmdContinue,
+		},
+		&ishell.Cmd{
+			Name:    "help",
+			Aliases: []string{"?"},
+			Help:    "print this help text",
+			Func:    func(c *ishell.Context) { c.Println(c.HelpText()) },
+		},
+		&ishell.Cmd{
+			Name:    "eval",
+			Aliases: []string{"!"},
+			Help:    "evaluate some code in the debuggee's context",
+			Func:    cmdEval,
+		},
+	}
 )
 
 func main() {
+	log.SetFlags(log.Ltime | log.Lshortfile)
+
+	if err := os.MkdirAll(temp, 0755); err != nil {
+		log.Fatal(err)
+	}
 	if err := writePid(); err != nil {
 		log.Fatal(err)
 	}
@@ -56,9 +84,45 @@ func main() {
 	}
 
 	shell := ishell.NewWithConfig(&readline.Config{Prompt: "Debug Console> "})
-	shell.NotFound(handler)
+	for _, cmd := range commands {
+		shell.AddCmd(cmd)
+	}
+
+	//shell.NotFound(cmdNotFound)
+	// TODO: looks like we'll need a custom completer here still
 	shell.CustomCompleter(completer{})
 	shell.Run()
+}
+
+type completer struct {
+}
+
+func (c completer) Do(line []rune, pos int) ([][]rune, int) {
+	start := string(line[:pos])
+	firstSpace := strings.Index(start, " ")
+
+	// autocomplete commands if there's only one word so far
+	if firstSpace == -1 {
+		var newLine [][]rune
+		for _, cmd := range commands {
+			if strings.HasPrefix(cmd.Name, start) {
+				completion := cmd.Name[pos:] + " "
+				newLine = append(newLine, []rune(completion))
+			}
+		}
+		return newLine, pos
+	}
+
+	command := start[:firstSpace]
+	line = line[firstSpace:]
+	pos -= firstSpace
+
+	// if multiple words, complete based on the available command
+	switch command {
+	case "eval", "!":
+		return cmdEvalCompleter(line, pos)
+	}
+	return nil, 0
 }
 
 func writePid() error {
@@ -70,6 +134,16 @@ func writePid() error {
 }
 
 func openInputSocket() error {
+	for {
+		_, err := os.Stat(inputFilepath)
+		if err == nil {
+			break
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to stat: %w", err)
+		}
+		time.Sleep(1 * time.Second)
+	}
 	var err error
 	if inputSocket, err = os.OpenFile(inputFilepath, os.O_WRONLY|os.O_CREATE, os.ModeNamedPipe); err != nil {
 		return fmt.Errorf("failed to open input socket: %s", err)
@@ -97,23 +171,24 @@ func readFifo(path string) (chan string, error) {
 
 func writeInput(action rune, line string) {
 	expr := string(action) + line
-	s := fmt.Sprintf("%d:%s\n", len(expr), expr)
+	log.Printf("sending to vim: %s", expr)
+	s := fmt.Sprintf("%d#%s\n", len(expr), expr)
 	if _, err := inputSocket.WriteString(s); err != nil {
 		log.Fatalf("failed to write to input socket: %s", err)
 	}
 }
 
-func handler(c *ishell.Context) {
-	writeInput('!', strings.Join(c.RawArgs, " "))
-	fmt.Println(<-results)
+func cmdContinue(c *ishell.Context) {
+	writeInput(':', "continue")
+	c.Println(color.GreenString("continuing"))
 }
 
-type completer struct{}
+func cmdEval(c *ishell.Context) {
+	writeInput('!', strings.Join(c.RawArgs[1:], " "))
+	c.Println(color.CyanString(<-results))
+}
 
-// NOTE: this function currently assumes that we are only completing the current word,
-// which is defined as the first non-alphanumeric character before pos (exclusive) up
-// to pos.
-func (c completer) Do(line []rune, pos int) ([][]rune, int) {
+func cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
 	writeInput('?', strconv.Itoa(pos)+"|"+string(line))
 
 	wordBreak := -1

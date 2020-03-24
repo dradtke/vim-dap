@@ -76,9 +76,9 @@ function! dap#connect(port) abort
         \ 'on_exit': function('s:handle_exit'),
         \ })
 
-  let l:evaluator_read = s:plugin_home.'/evaluator/read.sh'
+  let l:evaluator_read = s:plugin_home.'/console/read.sh'
   let s:evaluator_job_id = dap#async#job#start([l:evaluator_read], {
-        \ 'on_stdout': function('s:handle_evaluator_stdout'),
+        \ 'on_stdout': function('s:handle_console_stdout'),
         \ })
   call s:initialize()
 endfunction
@@ -702,26 +702,27 @@ function! dap#get_job_id() abort
   return s:job_id
 endfunction
 
-let s:evaluator_buffer = ''
+let s:console_buffer = ''
 
-function! s:handle_evaluator_stdout(job_id, data, event_type) abort
-  let s:evaluator_buffer .= join(a:data, "")
-  echomsg 'expression buffer: '.s:evaluator_buffer
-  let l:colon = stridx(s:evaluator_buffer, ':')
-  if l:colon == -1
+function! dap#get_console_buffer() abort
+  return s:console_buffer
+endfunction
+
+function! s:handle_console_stdout(job_id, data, event_type) abort
+  let s:console_buffer .= join(a:data, "")
+  let l:len_delim = stridx(s:console_buffer, '#')
+  if l:len_delim == -1
     return
   endif
-  let l:parts = split(s:evaluator_buffer, ':')
-  echomsg 'wanted length: '.l:parts[0]
-  let l:len = str2nr(l:parts[0])
+  let l:len = str2nr(s:console_buffer[:l:len_delim-1])
   echomsg 'got length: '.l:len
-  let l:rest = l:parts[1]
+  let l:rest = s:console_buffer[l:len_delim+1:]
   if len(l:rest) < l:len
     return
   endif
 
   let l:expr = l:rest[:l:len]
-  let s:evaluator_buffer = s:evaluator_buffer[len(l:parts[0])+1+l:len:]
+  let s:console_buffer = l:rest[l:len+1:]
 
   let l:action = l:expr[0]
   let l:text = l:expr[1:]
@@ -730,7 +731,12 @@ function! s:handle_evaluator_stdout(job_id, data, event_type) abort
     return
   endif
 
-  if l:action == '!'
+  if l:action == ':'
+    echomsg 'Evaluating action: '.l:text
+    if l:text == 'continue'
+      call dap#continue_stopped()
+    endif
+  elseif l:action == '!'
     call dap#evaluate(l:text)
   elseif l:action == '?'
     let l:cursor_delim = stridx(l:text, '|')

@@ -1,5 +1,6 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
+cd "$(dirname "${BASH_SOURCE[0]}")"
 mkdir -p bin
 
 version="0.0.1"
