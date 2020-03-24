@@ -11,12 +11,13 @@ if !exists('g:dap_initialized')
   let s:capabilities = {}
   let s:response_handlers = {}  " unused really, but left here because it may end up being useful
   let s:configuration_done_guard = {}
+  let s:scopes_guard = {}
+  let s:scopes_result = {}
   let s:stopped_thread = -1
   let s:stopped_stack_frame_id = -1
   let s:show_var = ''
   let s:launch_args = v:null
   let s:running = v:false
-  let s:scopes = []
   let g:dap_use_tmux = 1
   let g:dap_initialized = v:true
   let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h')
@@ -223,14 +224,6 @@ function! dap#scopes(frame_id) abort
   call s:send_message(s:build_request('scopes', l:body))
 endfunction
 
-function! dap#echo_scopes() abort
-  let l:scope_names = []
-  for l:scope in s:scopes
-    call add(l:scope_names, l:scope['name'])
-  endfor
-  echomsg 'Available scopes: '.join(l:scope_names, ', ') | echo ''
-endfunction
-
 function! dap#show_scope(name) abort
   let s:show_var = ''
   call s:show_scope(a:name)
@@ -345,9 +338,9 @@ function! s:handle_response(data) abort
       call dap#log_error('Initialization failed')
       call s:reset()
     elseif l:command == 'evaluate'
-      call writefile([a:data['message']], s:temp.'/eval-result.pipe', 'a')
+      call s:write_result(a:data['message'])
     elseif l:command == 'completions'
-      call writefile([a:data['message']], s:temp.'/eval-completion.pipe', 'a')
+      call s:write_completion(a:data['message'])
     else
       call dap#log_error('Command failed: '.l:command.': '.a:data['message'])
     endif
@@ -389,15 +382,31 @@ function! s:handle_response(data) abort
     " seem to include source information, so we can't really do anything about
     " it.
   elseif l:command == 'evaluate'
-    call writefile([a:data['body']['result']], s:temp.'/eval-result.pipe', 'a')
+    call s:write_result(a:data['body']['result'])
+  elseif l:command == 'scopes'
+    let s:scopes_guard = {}
+    let s:scopes_result = {}
+    let l:var_requests = []
+    for l:scope in a:data['body']['scopes']
+      let l:request = s:build_request('variables', {'variablesReference': l:scope['variablesReference']})
+      let s:scopes_guard[l:request['seq']] = l:scope['name']
+      call add(l:var_requests, l:request)
+    endfor
+    for l:request in l:var_requests
+      call s:send_message(l:request)
+    endfor
   elseif l:command == 'completions'
     let l:completion_items = a:data['body']['targets']
     let g:completion_items = l:completion_items
-    call writefile([json_encode(l:completion_items)], s:temp.'/eval-completion.pipe', 'a')
-  elseif l:command == 'scopes'
-    let s:scopes = a:data['body']['scopes']
+    call s:write_completion(json_encode(l:completion_items))
   elseif l:command == 'variables'
-    call s:handle_variables_response(a:data['body']['variables'])
+    if has_key(s:scopes_guard, l:request_seq)
+      let l:scope_name = s:scopes_guard[l:request_seq]
+      let s:scopes_result[l:scope_name] = a:data['body']['variables']
+      if len(s:scopes_guard) == len(s:scopes_result)
+        call s:write_result(json_encode(s:scopes_result))
+      endif
+    endif
   else
     echomsg 'Command succeeded: '.l:command
   endif
@@ -416,23 +425,6 @@ function! s:handle_initialized() abort
     endif
   endif
   call s:run_eval()
-endfunction
-
-function! s:handle_variables_response(variables) abort
-  if empty(s:show_var)
-    let l:variable_names = []
-    for l:variable in a:variables
-      call add(l:variable_names, l:variable['name'])
-    endfor
-    echomsg 'Variables in scope: '.join(l:variable_names, ', ')
-  else
-    for l:variable in a:variables
-      if l:variable['name'] == s:show_var
-        echomsg l:variable['value']
-        break
-      endif
-    endfor
-  endif
 endfunction
 
 function! s:handle_event(data) abort
@@ -496,8 +488,6 @@ function! s:handle_event_stopped_stacktrace(data) abort
 
   exec ':keepalt edit +'.l:line.' '.l:path
   call sign_place(1, 'dap-stopped-group', 'dap-stopped', '%', {'lnum': l:line, 'priority': 11})
-
-  call dap#scopes(s:stopped_stack_frame_id)
 endfunction
 
 function! s:handle_event_breakpoint(body) abort
@@ -715,7 +705,6 @@ function! s:handle_console_stdout(job_id, data, event_type) abort
     return
   endif
   let l:len = str2nr(s:console_buffer[:l:len_delim-1])
-  echomsg 'got length: '.l:len
   let l:rest = s:console_buffer[l:len_delim+1:]
   if len(l:rest) < l:len
     return
@@ -732,10 +721,7 @@ function! s:handle_console_stdout(job_id, data, event_type) abort
   endif
 
   if l:action == ':'
-    echomsg 'Evaluating action: '.l:text
-    if l:text == 'continue'
-      call dap#continue_stopped()
-    endif
+    call s:console_command(l:text)
   elseif l:action == '!'
     call dap#evaluate(l:text)
   elseif l:action == '?'
@@ -744,4 +730,20 @@ function! s:handle_console_stdout(job_id, data, event_type) abort
     let l:line = l:text[l:cursor_delim+1:]
     call dap#completions(l:line, l:cursor_pos)
   endif
+endfunction
+
+function! s:console_command(command) abort
+  if a:command == 'continue'
+    call dap#continue_stopped()
+  elseif a:command == 'scopes'
+    call dap#scopes(s:stopped_stack_frame_id)
+  endif
+endfunction
+
+function! s:write_result(data) abort
+  call writefile([a:data], s:temp.'/eval-result.pipe', 'a')
+endfunction
+
+function! s:write_completion(data) abort
+  call writefile([a:data], s:temp.'/eval-completion.pipe', 'a')
 endfunction

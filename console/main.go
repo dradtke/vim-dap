@@ -47,8 +47,13 @@ var (
 		&ishell.Cmd{
 			Name:    "eval",
 			Aliases: []string{"!"},
-			Help:    "evaluate some code in the debuggee's context",
+			Help:    "evaluate the rest of the line in the debuggee's context",
 			Func:    cmdEval,
+		},
+		&ishell.Cmd{
+			Name: "scopes",
+			Help: "see available scopes",
+			Func: cmdScopes,
 		},
 	}
 )
@@ -186,6 +191,30 @@ func cmdContinue(c *ishell.Context) {
 func cmdEval(c *ishell.Context) {
 	writeInput('!', strings.Join(c.RawArgs[1:], " "))
 	c.Println(color.CyanString(<-results))
+}
+
+func cmdScopes(c *ishell.Context) {
+	writeInput(':', "scopes")
+
+	type variable struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+
+	var scopes map[string][]variable
+	if err := json.Unmarshal([]byte(<-results), &scopes); err != nil {
+		log.Fatalf("failed to parse scopes: %s", err)
+	}
+
+	cf := color.CyanString
+
+	for scope, vars := range scopes {
+		c.Println(cf(scope))
+		for _, v := range vars {
+			c.Printf(cf("    %s = %s\n"), v.Name, v.Value)
+		}
+	}
+	c.Println("")
 }
 
 func cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
