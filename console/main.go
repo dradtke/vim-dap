@@ -55,6 +55,12 @@ var (
 			Help: "see available scopes",
 			Func: cmdScopes,
 		},
+		&ishell.Cmd{
+			Name:    "step",
+			Aliases: []string{"next"},
+			Help:    "move forward one step",
+			Func:    cmdStep,
+		},
 	}
 )
 
@@ -215,6 +221,11 @@ func cmdScopes(c *ishell.Context) {
 		}
 	}
 	c.Println("")
+}
+
+func cmdStep(c *ishell.Context) {
+	writeInput(':', "next")
+	c.Println(color.GreenString("stepping"))
 }
 
 func cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {

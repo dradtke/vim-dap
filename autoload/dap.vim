@@ -698,6 +698,8 @@ function! s:console_command(command) abort
     call dap#continue_stopped()
   elseif a:command == 'scopes'
     call dap#scopes#request(s:stopped_stack_frame_id)
+  elseif a:command == 'next'
+    call dap#next_stopped()
   endif
 endfunction
 
