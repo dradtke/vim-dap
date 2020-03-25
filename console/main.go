@@ -240,6 +240,10 @@ func cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
 	}
 	prefix := string(line[wordBreak+1 : pos])
 
+	if len(prefix) == 0 {
+		return nil, pos
+	}
+
 	var items []map[string]interface{}
 	if err := json.Unmarshal([]byte(<-completions), &items); err != nil {
 		log.Fatalf("failed to parse completion items: %s", err)
