@@ -47,16 +47,18 @@ environments.
    yourself, which is written in Go. Fortunately, Go supports easy
    cross-compilation of binaries, but I don't plan on creating pre-built
    binaries for other systems until things have stabilized a bit.
-4. You must have installed a supported LSP client. Currently only
-   LanguageClient-neovim is supported, but it should be easy to add support
-   for additional clients.
-5. Lastly, you must be working on a Java project. The Debug Adapter Protocol
-   supports many languages, but the setup for each one may be different, and
-   the commands currently implemented here for starting the debug adapter are
-   currently hard-coded to the one provided by Eclipse/Microsoft for Java
-   development.  This is absolutely a temporary state of affairs, and I hope
-   to be able to make this plugin as language-agnostic as possible in the
-   future.
+
+These ones aren't strictly required, but make it easier to use because the
+plugin will handle launching the debug adapter for you:
+
+4. Have a supported LSP client installed. Currently only LanguageClient-neovim
+   is supported, but it should be easy to add support for additional clients.
+5. Be working on a Java project. The Debug Adapter Protocol supports many
+   languages, but the setup for each one may be different, and the commands
+   currently implemented here for starting the debug adapter are currently
+   hard-coded to the one provided by Eclipse/Microsoft for Java development.
+   This is absolutely a temporary state of affairs, and I hope to be able to
+   make this plugin as language-agnostic as possible in the future.
 
 ------------------------------------------------------------------------------
  vim:tw=78:ts=8:ft=help:noet:nospell
