@@ -1,15 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
-	"time"
 	"unicode"
 
 	"github.com/abiosoft/readline"
@@ -17,105 +19,139 @@ import (
 	"gopkg.in/abiosoft/ishell.v2"
 )
 
-const (
-	temp                     = "/tmp/vim-dap"
-	pidFilepath              = temp + "/eval-console.pid"
-	inputFilepath            = temp + "/eval-input.pipe"
-	outputResultFilepath     = temp + "/eval-result.pipe"
-	outputCompletionFilepath = temp + "/eval-completion.pipe"
-	logFilepath              = temp + "/eval-console.log"
-)
-
-var (
-	inputSocket *os.File
-	results     chan string
-	completions chan string
-
-	commands = []*ishell.Cmd{
-		&ishell.Cmd{
-			Name:    "continue",
-			Aliases: []string{"c"},
-			Help:    "continue execution after stopping",
-			Func:    cmdContinue,
-		},
-		&ishell.Cmd{
-			Name:    "help",
-			Aliases: []string{"?"},
-			Help:    "print this help text",
-			Func:    func(c *ishell.Context) { c.Println(c.HelpText()) },
-		},
-		&ishell.Cmd{
-			Name:    "eval",
-			Aliases: []string{"!"},
-			Help:    "evaluate the rest of the line in the debuggee's context",
-			Func:    cmdEval,
-		},
-		&ishell.Cmd{
-			Name: "scopes",
-			Help: "see available scopes",
-			Func: cmdScopes,
-		},
-		&ishell.Cmd{
-			Name:    "step",
-			Aliases: []string{"next"},
-			Help:    "move forward one step",
-			Func:    cmdStep,
-		},
-	}
-)
-
 func main() {
 	log.SetFlags(log.Ltime | log.Lshortfile)
 
-	if err := os.MkdirAll(temp, 0755); err != nil {
-		log.Fatal(err)
-	}
-	if err := writePid(); err != nil {
-		log.Fatal(err)
-	}
-	if err := openInputSocket(); err != nil {
-		log.Fatal(err)
-	}
-	if ch, err := readFifo(outputResultFilepath); err != nil {
-		log.Fatal(err)
-	} else {
-		results = ch
-	}
-	if ch, err := readFifo(outputCompletionFilepath); err != nil {
-		log.Fatal(err)
-	} else {
-		completions = ch
+	var (
+		network = flag.String("network", "", "network to connect with")
+		address = flag.String("address", "", "address to listen on")
+		logfile = flag.String("log", "", "path to log file")
+	)
+	flag.Parse()
+
+	if *logfile != "" {
+		if f, err := os.Create(*logfile); err != nil {
+			log.Fatal(err)
+		} else {
+			log.SetOutput(f)
+			defer f.Close()
+		}
 	}
 
-	if f, err := os.Create(logFilepath); err != nil {
-		log.Fatal(err)
-	} else {
-		log.SetOutput(f)
-		defer f.Close()
+	listener, err := net.Listen(*network, *address)
+	if err != nil {
+		log.Fatalf("listen error: %s", err)
+	}
+	defer listener.Close()
+
+	conn, err := listener.Accept()
+	if err != nil {
+		log.Fatalf("failed to accept connection: %s", err)
 	}
 
-	shell := ishell.NewWithConfig(&readline.Config{Prompt: "Debug Console> "})
-	for _, cmd := range commands {
-		shell.AddCmd(cmd)
-	}
-
-	//shell.NotFound(cmdNotFound)
-	// TODO: looks like we'll need a custom completer here still
-	shell.CustomCompleter(completer{})
-	shell.Run()
+	dc := newDebugConsole(conn)
+	go dc.processInput()
+	dc.shell.Run()
 }
 
-type completer struct {
+type debugConsole struct {
+	shell                *ishell.Shell
+	conn                 net.Conn
+	results, completions chan string
 }
 
-func (c completer) Do(line []rune, pos int) ([][]rune, int) {
+func newDebugConsole(conn net.Conn) *debugConsole {
+	dc := &debugConsole{
+		conn:        conn,
+		shell:       ishell.NewWithConfig(&readline.Config{Prompt: "Debug Console> "}),
+		results:     make(chan string, 1),
+		completions: make(chan string, 1),
+	}
+
+	dc.shell.AddCmd(&ishell.Cmd{
+		Name:    "continue",
+		Aliases: []string{"c"},
+		Help:    "continue execution after stopping",
+		Func:    dc.cmdContinue,
+	})
+	dc.shell.AddCmd(&ishell.Cmd{
+		Name:    "help",
+		Aliases: []string{"?"},
+		Help:    "print this help text",
+		Func:    func(c *ishell.Context) { c.Println(c.HelpText()) },
+	})
+	dc.shell.AddCmd(&ishell.Cmd{
+		Name:    "eval",
+		Aliases: []string{"!"},
+		Help:    "evaluate the rest of the line in the debuggee's context",
+		Func:    dc.cmdEval,
+	})
+	dc.shell.AddCmd(&ishell.Cmd{
+		Name: "scopes",
+		Help: "see available scopes",
+		Func: dc.cmdScopes,
+	})
+	dc.shell.AddCmd(&ishell.Cmd{
+		Name:    "step",
+		Aliases: []string{"next"},
+		Help:    "move forward one step",
+		Func:    dc.cmdStep,
+	})
+
+	dc.shell.CustomCompleter(dc)
+	dc.shell.NotFound(dc.cmdEval)
+	dc.shell.EOF(dc.cmdContinue)
+	// Setting an empty interrupt function prevents it from exiting the console.
+	dc.shell.Interrupt(func(c *ishell.Context, count int, input string) {})
+
+	return dc
+}
+
+func (dc *debugConsole) processInput() {
+	defer dc.shell.Stop()
+
+	r := bufio.NewReader(dc.conn)
+	for {
+		line, err := r.ReadString('\n')
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			log.Fatalf("error reading input: %s", err)
+		}
+
+		indicator := line[0]
+		rest := line[1:]
+		switch indicator {
+		case '!':
+			dc.results <- rest
+		case '?':
+			// never block on sending a completion result, so only send it if there's space in the buffer
+			if len(dc.completions) < cap(dc.completions) {
+				dc.completions <- rest
+			}
+		default:
+			log.Printf("unknown input indicator: %v", indicator)
+		}
+	}
+}
+
+func (dc *debugConsole) writeOutput(action rune, line string) {
+	expr := string(action) + line
+	if _, err := fmt.Fprintf(dc.conn, "%d#%s\n", len(expr), expr); err != nil {
+		log.Fatalf("failed to write to input socket: %s", err)
+	}
+}
+
+// Do implements the custom completer interface.
+func (dc debugConsole) Do(line []rune, pos int) ([][]rune, int) {
 	start := string(line[:pos])
 	firstSpace := strings.Index(start, " ")
 
 	// autocomplete commands if there's only one word so far
 	if firstSpace == -1 {
 		var newLine [][]rune
-		for _, cmd := range commands {
+		for _, cmd := range dc.shell.Cmds() {
 			if strings.HasPrefix(cmd.Name, start) {
 				completion := cmd.Name[pos:] + " "
 				newLine = append(newLine, []rune(completion))
@@ -131,76 +167,24 @@ func (c completer) Do(line []rune, pos int) ([][]rune, int) {
 	// if multiple words, complete based on the available command
 	switch command {
 	case "eval", "!":
-		return cmdEvalCompleter(line, pos)
-	}
-	return nil, 0
-}
-
-func writePid() error {
-	pid := strconv.Itoa(os.Getpid())
-	if err := ioutil.WriteFile(pidFilepath, []byte(pid), 0644); err != nil {
-		return fmt.Errorf("failed to write pid file: %s", err)
-	}
-	return nil
-}
-
-func openInputSocket() error {
-	for {
-		_, err := os.Stat(inputFilepath)
-		if err == nil {
-			break
-		}
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to stat: %w", err)
-		}
-		time.Sleep(1 * time.Second)
-	}
-	var err error
-	if inputSocket, err = os.OpenFile(inputFilepath, os.O_WRONLY|os.O_CREATE, os.ModeNamedPipe); err != nil {
-		return fmt.Errorf("failed to open input socket: %s", err)
-	}
-	return nil
-}
-
-func readFifo(path string) (chan string, error) {
-	os.Remove(path)
-	if err := syscall.Mkfifo(path, 0644); err != nil {
-		return nil, fmt.Errorf("failed to make fifo: %s", err)
-	}
-	ch := make(chan string)
-	go func() {
-		for {
-			b, err := ioutil.ReadFile(path)
-			if err != nil {
-				log.Fatalf("failed to read from fifo: %s", err)
-			}
-			ch <- strings.TrimSpace(string(b))
-		}
-	}()
-	return ch, nil
-}
-
-func writeInput(action rune, line string) {
-	expr := string(action) + line
-	log.Printf("sending to vim: %s", expr)
-	s := fmt.Sprintf("%d#%s\n", len(expr), expr)
-	if _, err := inputSocket.WriteString(s); err != nil {
-		log.Fatalf("failed to write to input socket: %s", err)
+		return dc.cmdEvalCompleter(line, pos)
+	default:
+		return nil, 0
 	}
 }
 
-func cmdContinue(c *ishell.Context) {
-	writeInput(':', "continue")
+func (dc *debugConsole) cmdContinue(c *ishell.Context) {
+	dc.writeOutput(':', "continue")
 	c.Println(color.GreenString("continuing"))
 }
 
-func cmdEval(c *ishell.Context) {
-	writeInput('!', strings.Join(c.RawArgs[1:], " "))
-	c.Println(color.CyanString(<-results))
+func (dc *debugConsole) cmdEval(c *ishell.Context) {
+	dc.writeOutput('!', strings.Join(c.Args, " "))
+	c.Println(color.CyanString(<-dc.results))
 }
 
-func cmdScopes(c *ishell.Context) {
-	writeInput(':', "scopes")
+func (dc *debugConsole) cmdScopes(c *ishell.Context) {
+	dc.writeOutput(':', "scopes")
 
 	type variable struct {
 		Name  string `json:"name"`
@@ -208,7 +192,7 @@ func cmdScopes(c *ishell.Context) {
 	}
 
 	var scopes map[string][]variable
-	if err := json.Unmarshal([]byte(<-results), &scopes); err != nil {
+	if err := json.Unmarshal([]byte(<-dc.results), &scopes); err != nil {
 		log.Fatalf("failed to parse scopes: %s", err)
 	}
 
@@ -223,13 +207,13 @@ func cmdScopes(c *ishell.Context) {
 	c.Println("")
 }
 
-func cmdStep(c *ishell.Context) {
-	writeInput(':', "next")
+func (dc *debugConsole) cmdStep(c *ishell.Context) {
+	dc.writeOutput(':', "next")
 	c.Println(color.GreenString("stepping"))
 }
 
-func cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
-	writeInput('?', strconv.Itoa(pos)+"|"+string(line))
+func (dc *debugConsole) cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
+	dc.writeOutput('?', strconv.Itoa(pos)+"|"+string(line))
 
 	wordBreak := -1
 	for i := pos - 1; i >= 0; i-- {
@@ -240,12 +224,15 @@ func cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
 	}
 	prefix := string(line[wordBreak+1 : pos])
 
-	if len(prefix) == 0 {
+	// NOTE: this wordBreak != . check assumes a C-like language. Technically, it should
+	// be checking whether the character(s) at wordBreak represent a method call, and if
+	// so, completion should continue.
+	if line[wordBreak] != '.' && len(prefix) == 0 {
 		return nil, pos
 	}
 
 	var items []map[string]interface{}
-	if err := json.Unmarshal([]byte(<-completions), &items); err != nil {
+	if err := json.Unmarshal([]byte(<-dc.completions), &items); err != nil {
 		log.Fatalf("failed to parse completion items: %s", err)
 	}
 
@@ -270,4 +257,12 @@ func cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
 	}
 
 	return newLine, len(prefix)
+}
+
+func writePid(path string) error {
+	pid := strconv.Itoa(os.Getpid())
+	if err := ioutil.WriteFile(path, []byte(pid), 0644); err != nil {
+		return fmt.Errorf("failed to write pid file: %s", err)
+	}
+	return nil
 }

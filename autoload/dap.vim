@@ -3,30 +3,30 @@
 "
 " TODO: clean up temp files before and/or after?
 
+if !has('nvim') && !has('channel')
+  echoerr 'vim-dap: Neovim or Vim with channel support is required'
+  finish
+endif
+
 if !exists('g:dap_initialized')
-  let s:job_id = -1
-  let s:evaluator_job_id = -1
+  let s:debug_adapter_job_id = 0
+  let s:debug_console_socket = 0
   let s:seq = 1
   let s:last_buffer = -1
+  let s:restarting = v:null
   let s:capabilities = {}
   let s:response_handlers = {}  " unused really, but left here because it may end up being useful
   let s:configuration_done_guard = {}
   let s:stopped_thread = -1
   let s:stopped_stack_frame_id = -1
-  let s:show_var = ''
-  let s:launch_args = v:null
-  let s:running = v:false
+  let s:adapter_running = v:false
+  let s:debuggee_running = v:false
   let g:dap_use_tmux = 1
   let g:dap_initialized = v:true
   let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h')
 
   call sign_define('dap-breakpoint', {'text': '🛑'})
   call sign_define('dap-stopped', {'text': '⏸'})
-
-  let s:temp = '/tmp/vim-dap'
-  if !isdirectory(s:temp)
-    call mkdir(s:temp)
-  endif
 endif
 
 function! dap#run(buffer) abort
@@ -34,17 +34,28 @@ function! dap#run(buffer) abort
     call s:split_panes()
   endif
   let s:last_buffer = bufnr(a:buffer)
-  if s:running
-    if s:capabilities['supportsRestartRequest']
-      echoerr 'Fancy restart requested, but not implemented yet.'
-    endif
-    call dap#terminate(v:true)  " TODO: ensure that this restarts the debuggee
+  " It's possible that some debuggers will not need to restart their adapter
+  " if it's already running, but Java seems to require restarting the whole
+  " thing, so at least for now we'll stick with the nuclear option.
+  if s:debuggee_running || s:adapter_running
+    call dap#restart(a:buffer)
   else
+    echomsg 'Starting debugger'
     if exists('g:LanguageClient_loaded') && g:LanguageClient_loaded
       call dap#language_client#run(a:buffer)
     else
       echoerr 'No supported language client extension installed.'
     endif
+  endif
+endfunction
+
+function! dap#restart(buffer) abort
+  echomsg 'Restarting debugger'
+  if s:capabilities['supportsRestartRequest']
+    echoerr 'Fancy restart requested, but not implemented yet.'
+  else
+    let s:restarting = a:buffer
+    call dap#disconnect(v:true)  " TODO: ensure that this restarts the debuggee
   endif
 endfunction
 
@@ -64,34 +75,42 @@ function! dap#connect(port) abort
     echoerr 'command "nc" not found! please install netcat and try again'
     return
   endif
-  "if s:job_id != 0
-  "  call dap#log_error('Already connected.')
-  "  return
-  "endif
+  if s:debug_adapter_job_id > 0
+    call dap#log_error('Already connected.')
+    return
+  endif
   call dap#log('Connecting to debugger on port '.a:port.'...')
-  let s:job_id = dap#async#job#start(['nc', 'localhost', a:port], {
+  let s:debug_adapter_job_id = dap#async#job#start(['nc', 'localhost', a:port], {
         \ 'on_stdout': function('s:handle_stdout'),
         \ 'on_stderr': function('s:handle_stderr'),
         \ 'on_exit': function('s:handle_exit'),
         \ })
 
-  let l:evaluator_read = s:plugin_home.'/console/read.sh'
-  let s:evaluator_job_id = dap#async#job#start([l:evaluator_read], {
-        \ 'on_stdout': function('s:handle_console_stdout'),
-        \ })
   call s:initialize()
 endfunction
 
-function! dap#disconnect() abort
-  if s:job_id == -1
+function! dap#disconnect(restart) abort
+  if s:debug_adapter_job_id == 0
     call dap#log_error('No connection to disconnect from.')
     return
   endif
-  call dap#send_message(dap#build_request('disconnect', {}))
+  call dap#send_message(dap#build_request('disconnect', {'restart': a:restart}))
+endfunction
+
+function! dap#is_connected() 
+  return s:debug_adapter_job_id > 0
+endfunction
+
+function! dap#adapter_running()
+  return s:adapter_running
+endfunction
+
+function! dap#debuggee_running()
+  return s:debuggee_running
 endfunction
 
 function! dap#get_capabilities() abort
-  if s:job_id == -1
+  if s:debug_adapter_job_id == 0
     call dap#log_error('No debugger session running.')
     return v:null
   endif
@@ -101,7 +120,7 @@ endfunction
 " NOTE: In order to run JUnit, you need to specify a mainClass of
 " org.junit.runner.JUnitCore along with an array of classpaths.
 function! dap#launch(arguments) abort
-  if s:job_id == -1
+  if s:debug_adapter_job_id == 0
     echoerr 'No debug session running.'
     return
   endif
@@ -169,8 +188,9 @@ function! dap#step_out_stopped() abort
 endfunction
 
 function! dap#terminate(restart) abort
-  if s:running
-    call system('tmux C-c')
+  if s:adapter_running
+    call system('tmux send-keys -t '.s:debuggee_pane.' C-c')
+    call s:quit_console()
   endif
   call dap#send_message(dap#build_request('terminate', {'restart': a:restart}))
 endfunction
@@ -232,7 +252,7 @@ function! dap#log_error(msg) abort
 endfunction
 
 function! s:reset()
-  let s:job_id = -1
+  let s:debug_adapter_job_id = 0
   let s:seq = 1
 endfunction
 
@@ -306,6 +326,8 @@ endfunction
 
 function! s:handle_response(data) abort
   let l:command = a:data['command']
+
+  " Handle failure cases first.
   if !a:data['success']
     if l:command == 'initialize'
       call dap#log_error('Initialization failed')
@@ -320,15 +342,21 @@ function! s:handle_response(data) abort
     return
   endif
 
+  " At this point, we know the request succeeded.
   if l:command == 'initialize'
     call dap#log('Initialization successful')
     let s:capabilities = a:data['body']
-    call s:handle_initialized()
+    call s:handle_initialize_response()
   elseif l:command == 'launch'
     call s:set_all_breakpoints()
   elseif l:command == 'disconnect'
-    call dap#async#job#stop(s:job_id)
+    let s:adapter_running = v:false
+    call dap#async#job#stop(s:debug_adapter_job_id)
     call s:reset()
+    if s:restarting != v:null
+      call dap#run(s:restarting)
+      let s:restarting = v:null
+    endif
     return
   endif
 
@@ -373,26 +401,34 @@ function! s:handle_response(data) abort
   endif
 endfunction
 
-function! s:handle_initialized() abort
+function! s:handle_initialize_response() abort
+  let l:filetype = getbufvar(s:last_buffer, '&filetype')
   " This method is written under the assumption that what needs to happen
   " after initialization varies by language. For example, java needs to launch
   " a VM before setting breakpoints, but other languages may need things done
   " in a different order.
-  if &filetype == 'java'
+  if l:filetype == 'java'
     if exists('g:LanguageClient_loaded') && g:LanguageClient_loaded
       call dap#language_client#launch(s:last_buffer)
     else
       echoerr 'No supported language client extension installed.'
     endif
   endif
-  call s:run_eval()
+
+  let l:socket = '/tmp/vim-dap.sock'
+  call delete(l:socket)
+  call s:run_debug_console(l:socket)
+endfunction
+
+function! s:handle_initialized_event() abort
+  call sign_unplace('dap-stopped-group')
+  let s:adapter_running = v:true
 endfunction
 
 function! s:handle_event(data) abort
+  echomsg 'Handling event: '.a:data['event']
   if a:data['event'] == 'initialized'
-    call sign_unplace('dap-stopped-group')
-  elseif a:data['event'] == 'process'
-    let s:running = v:true
+    call s:handle_initialized_event()
   elseif a:data['event'] == 'output'
     echoerr 'The debuggee should be running in a terminal, no output event is expected.'
   elseif a:data['event'] == 'stopped'
@@ -400,11 +436,14 @@ function! s:handle_event(data) abort
   elseif a:data['event'] == 'breakpoint'
     call s:handle_event_breakpoint(a:data['body'])
   elseif a:data['event'] == 'terminated'
-    call dap#async#job#stop(s:job_id)
-    call s:quit_eval()
+    echomsg 'Adapter terminated.'
+    let s:adapter_running = v:false
+    call dap#async#job#stop(s:debug_adapter_job_id)
     call s:reset()
   elseif a:data['event'] == 'exited'
-    call s:handle_event_exited(a:data['body']['exitCode'])
+    let s:debuggee_running = v:false
+    call s:quit_console()
+    echomsg 'Process exited with exit code '.a:data['body']['exitCode']
   endif
 endfunction
 
@@ -462,11 +501,6 @@ function! s:handle_event_breakpoint(body) abort
   endif
 endfunction
 
-function! s:handle_event_exited(exit_code) abort
-  let s:running = v:false
-  echomsg 'Process exited with exit code '.a:exit_code
-endfunction
-
 function! s:handle_reverse_request(data) abort
   if a:data['command'] == 'runInTerminal'
     let l:request_args = a:data['arguments']
@@ -494,7 +528,7 @@ function! s:handle_reverse_request(data) abort
       let l:command = l:env.' '.l:command
     endif
 
-    let l:script = s:temp.'/debug.sh'
+    let l:script = '/tmp/vim-dap-debug.sh'
     call writefile(['exec '.l:command], l:script)
     " execute 'terminal '.l:command
     if g:dap_use_tmux
@@ -519,7 +553,7 @@ endfunction
 function! dap#send_message(body) abort
   let l:encoded_body = json_encode(a:body)
   let l:content_length = strlen(l:encoded_body)
-  call dap#async#job#send(s:job_id, "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body)
+  call dap#async#job#send(s:debug_adapter_job_id, "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body)
 endfunction
 
 function! dap#build_request(command, arguments) abort
@@ -568,7 +602,7 @@ function! s:initialize() abort
 endfunction
 
 function! s:set_breakpoints(buffer, signs) abort
-  if s:job_id == -1
+  if s:debug_adapter_job_id == 0
     call dap#log_error('No debugger session running.')
     return
   endif
@@ -590,7 +624,7 @@ function! s:set_breakpoints(buffer, signs) abort
 endfunction
 
 function! s:set_all_breakpoints() abort
-  if s:job_id == -1
+  if s:debug_adapter_job_id == 0
     call dap#log_error('No debugger session running.')
     return
   endif
@@ -635,22 +669,28 @@ function! s:run_debuggee(command) abort
   call system('tmux send-keys -t '.s:debuggee_pane.' "'.a:command.'" Enter')
 endfunction
 
-function! s:run_eval() abort
-  call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.s:plugin_home.' && ./bin/console)" Enter')
-endfunction
-
-function! s:quit_eval() abort
-  " the pid file may not exist if the program hasn't written it yet by the
-  " time tests finish, so just be defensive.
-  let l:pid_file = s:temp.'/eval-console.pid'
-  if filereadable(l:pid_file)
-    let l:pid = readfile(l:pid_file)[0]
-    call system('kill -SIGTERM '.l:pid)
+function! s:run_debug_console(socket) abort
+  if s:debug_console_socket != 0
+    call s:quit_console()
+    sleep 1
   endif
+  let l:command = './bin/console -network unix -address '.a:socket.' -log /tmp/vim-dap.log'
+  call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.s:plugin_home.' && '.l:command.')" Enter')
+  let s:debug_console_socket = 0
+  echomsg 'Waiting for Debug Console socket to become available...'
+  while s:debug_console_socket == 0
+    try
+      " TODO: support Vim 8 equivalent
+      let s:debug_console_socket = sockconnect('pipe', a:socket, {'on_data': function('s:handle_debug_console_stdout')})
+    catch
+      sleep 100m
+    endtry
+  endwhile
+  echomsg 'Connected to Debug Console.'
 endfunction
 
 function! dap#get_job_id() abort
-  return s:job_id
+  return s:debug_adapter_job_id
 endfunction
 
 let s:console_buffer = ''
@@ -659,7 +699,7 @@ function! dap#get_console_buffer() abort
   return s:console_buffer
 endfunction
 
-function! s:handle_console_stdout(job_id, data, event_type) abort
+function! s:handle_debug_console_stdout(chan_id, data, name) abort
   let s:console_buffer .= join(a:data, "")
   let l:len_delim = stridx(s:console_buffer, '#')
   if l:len_delim == -1
@@ -682,10 +722,13 @@ function! s:handle_console_stdout(job_id, data, event_type) abort
   endif
 
   if l:action == ':'
+    echomsg 'Executing command'
     call s:console_command(l:text)
   elseif l:action == '!'
+    echomsg 'Executing evaluation'
     call dap#evaluate(l:text)
   elseif l:action == '?'
+    echomsg 'Executing completions'
     let l:cursor_delim = stridx(l:text, '|')
     let l:cursor_pos = str2nr(l:text[:l:cursor_delim-1])
     let l:line = l:text[l:cursor_delim+1:]
@@ -694,6 +737,7 @@ function! s:handle_console_stdout(job_id, data, event_type) abort
 endfunction
 
 function! s:console_command(command) abort
+  echomsg 'Executing command: '.a:command
   if a:command == 'continue'
     call dap#continue_stopped()
   elseif a:command == 'scopes'
@@ -704,9 +748,21 @@ function! s:console_command(command) abort
 endfunction
 
 function! dap#write_result(data) abort
-  call writefile([a:data], s:temp.'/eval-result.pipe', 'a')
+  call s:send_to_console('!'.a:data)
 endfunction
 
 function! dap#write_completion(data) abort
-  call writefile([a:data], s:temp.'/eval-completion.pipe', 'a')
+  call s:send_to_console('?'.a:data)
+endfunction
+
+function! s:send_to_console(data) abort
+  " TODO: support Vim 8 equivalent
+  " An empty string is written to make sure a final newline is sent.
+  call chansend(s:debug_console_socket, [a:data, ''])
+endfunction
+
+function! s:quit_console() abort
+  " TODO: support Vim 8 equivalent
+  call chanclose(s:debug_console_socket)
+  let s:debug_console_socket = 0
 endfunction

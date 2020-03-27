@@ -8,18 +8,24 @@ function! dap#language_client#run(buffer) abort
 endfunction
 
 function! dap#language_client#run_java(buffer) abort
-  function! s:start_callback(data) closure
-    if has_key(a:data, 'result')
-      let l:port = a:data['result']
-      call dap#connect(l:port)
-    elseif has_key(a:data, 'error')
-      echoerr a:data['error']['message']
-    else
-      echoerr 'Call to vscode.java.startDebugSession returned unexpected response.'
-    endif
-  endfunction
+  if dap#is_connected()
+    " Java at least requires us to start a new debug adapter for each session.
+    call dap#restart(a:buffer)
+  else
+    function! s:start_callback(data) closure
+      if has_key(a:data, 'result')
+        let l:port = a:data['result']
+        call dap#connect(l:port)
+      elseif has_key(a:data, 'error')
+        echoerr 'Failed to start debug session, is the language server running? Error message to follow:'
+        echoerr a:data['error']['message']
+      else
+        echoerr 'Call to vscode.java.startDebugSession returned unexpected response.'
+      endif
+    endfunction
 
-  call LanguageClient#workspace_executeCommand('vscode.java.startDebugSession', [], function('s:start_callback'))
+    call LanguageClient#workspace_executeCommand('vscode.java.startDebugSession', [], function('s:start_callback'))
+  endif
 endfunction
 
 function! dap#language_client#launch(buffer, ...) abort

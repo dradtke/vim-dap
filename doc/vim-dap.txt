@@ -43,8 +43,10 @@ environments.
 2. Named pipes. These are used for communication between the interactive Debug
    Console and Vim, so your system must support these.  If you can run the
    `mkfifo` command, then you're good to go.
-3. You must be running 64-bit Linux, or be able to compile the Debug Console
-   yourself, which is written in Go. Fortunately, Go supports easy
+3. You must have netcat (`nc`) installed, which is used to communicate with
+   the debug adapter.
+3. You must either be running 64-bit Linux, or be able to compile the Debug
+   Console yourself, which is written in Go. Fortunately, Go supports easy
    cross-compilation of binaries, but I don't plan on creating pre-built
    binaries for other systems until things have stabilized a bit.
 
