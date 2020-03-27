@@ -114,3 +114,26 @@ function! dap#lang#java#public_class_name(buffer) abort
   let l:parts = split(l:public_class_line)
   return l:parts[2]
 endfunction
+
+function! dap#lang#java#test_name() abort
+  let l:line_number = search('^\s*@Test\>', 'bnW')
+  if l:line_number == 0
+    throw 'No @Test annotation found.'
+  endif
+  let l:line_number += 1
+  while 1
+    let l:line = getbufline('%', l:line_number)
+    if empty(l:line)
+      throw 'No public void method found after @Test annotation'
+    endif
+    if l:line[0] =~ '\s*public void '
+      let l:parts = split(l:line[0])
+      let l:test_name = l:parts[2]
+      let l:open_paren = stridx(l:test_name, '(')
+      if l:open_paren != -1
+        let l:test_name = l:test_name[:l:open_paren-1]
+      endif
+      return l:test_name
+    endif
+  endwhile
+endfunction
