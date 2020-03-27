@@ -10,7 +10,7 @@ echo "Building debug console binary for ${GOOS}/${GOARCH}..."
 binary_name="console-${GOOS}-${GOARCH}"
 
 mkdir -p bin
-(cd evaluator/console && go build -o "../../bin/${binary_name}")
+(cd console && go build -o "../bin/${binary_name}")
 
 echo ""
 echo "Binaries available in bin/"
