@@ -13,6 +13,7 @@ if !exists('g:dap_initialized')
   let s:debug_console_socket = 0
   let s:seq = 1
   let s:last_buffer = -1
+  let s:run_args = []
   let s:restarting = v:null
   let s:capabilities = {}
   let s:response_handlers = {}  " unused really, but left here because it may end up being useful
@@ -29,6 +30,11 @@ if !exists('g:dap_initialized')
   call sign_define('dap-stopped', {'text': '⏸'})
 endif
 
+function! dap#run_with_args(buffer, run_args) abort
+  let s:run_args = a:run_args
+  call dap#run(a:buffer)
+endfunction
+
 function! dap#run(buffer) abort
   if str2nr(system('tmux display-message -p "#{window_panes}"')) == 1
     call s:split_panes()
@@ -41,11 +47,7 @@ function! dap#run(buffer) abort
     call dap#restart(a:buffer)
   else
     echomsg 'Starting debugger'
-    if exists('g:LanguageClient_loaded') && g:LanguageClient_loaded
-      call dap#language_client#run(a:buffer)
-    else
-      echoerr 'No supported language client extension installed.'
-    endif
+    call dap#lang#run(a:buffer, s:run_args)
   endif
 endfunction
 
@@ -402,18 +404,7 @@ function! s:handle_response(data) abort
 endfunction
 
 function! s:handle_initialize_response() abort
-  let l:filetype = getbufvar(s:last_buffer, '&filetype')
-  " This method is written under the assumption that what needs to happen
-  " after initialization varies by language. For example, java needs to launch
-  " a VM before setting breakpoints, but other languages may need things done
-  " in a different order.
-  if l:filetype == 'java'
-    if exists('g:LanguageClient_loaded') && g:LanguageClient_loaded
-      call dap#language_client#launch(s:last_buffer)
-    else
-      echoerr 'No supported language client extension installed.'
-    endif
-  endif
+  call dap#lang#initialized(s:last_buffer, s:run_args)
 
   let l:socket = '/tmp/vim-dap.sock'
   call delete(l:socket)
