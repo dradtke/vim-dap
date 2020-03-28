@@ -16,7 +16,13 @@ case "${os}-${arch}" in
 		;;
 
 	*)
-		echo "OS-arch pair not supported: ${os}-${arch}"
-		exit 1
+		# TODO: allow it to always be built from source
+		if command -v go >/dev/null; then
+			echo "Prebuilt binary not found for ${os}-${arch}, building from source..."
+			make console
+		else
+			echo "Prebuilt binary not found for ${os}-${arch}, and no Go compiler found. Exiting."
+			exit 1
+		fi
 		;;
 esac
