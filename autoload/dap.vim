@@ -25,6 +25,8 @@ if !exists('g:dap_initialized')
   let g:dap_use_tmux = 1
   let g:dap_initialized = v:true
   let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h')
+  let s:tailing_output = v:false
+  let s:output_file = '/tmp/vim-dap.output'
 
   call sign_define('dap-breakpoint', {'text': '🛑'})
   call sign_define('dap-stopped', {'text': '⏸'})
@@ -72,23 +74,30 @@ function! dap#run_last() abort
   call dap#run(s:last_buffer)
 endfunction
 
-function! dap#connect(port) abort
-  if !executable('nc')
-    echoerr 'command "nc" not found! please install netcat and try again'
-    return
-  endif
+function! dap#spawn(args) abort
   if s:debug_adapter_job_id > 0
     call dap#log_error('Already connected.')
     return
   endif
-  call dap#log('Connecting to debugger on port '.a:port.'...')
-  let s:debug_adapter_job_id = dap#async#job#start(['nc', 'localhost', a:port], {
+  let s:debug_adapter_job_id = dap#async#job#start(a:args, {
         \ 'on_stdout': function('s:handle_stdout'),
         \ 'on_stderr': function('s:handle_stderr'),
         \ 'on_exit': function('s:handle_exit'),
         \ })
 
   call s:initialize()
+endfunction
+
+function! dap#connect(port) abort
+  if !executable('nc')
+    throw 'command "nc" not found! please install netcat and try again'
+  endif
+  if s:debug_adapter_job_id > 0
+    call dap#log_error('Already connected.')
+    return
+  endif
+  call dap#log('Connecting to debugger on port '.a:port.'...')
+  call dap#spawn(['nc', 'localhost', a:port])
 endfunction
 
 function! dap#disconnect(restart) abort
@@ -134,7 +143,7 @@ function! dap#threads() abort
 endfunction
 
 function! dap#continue(thread_id) abort
-  call s:set_all_breakpoints()
+  " call s:set_all_breakpoints()
   call sign_unplace('dap-stopped-group')
   call dap#send_message(dap#build_request('continue', {'threadId': a:thread_id}))
 endfunction
@@ -191,7 +200,7 @@ endfunction
 
 function! dap#terminate(restart) abort
   if s:adapter_running
-    call system('tmux send-keys -t '.s:debuggee_pane.' C-c')
+    call system('tmux send-keys -t '.s:output_pane.' C-c')
     call s:quit_console()
   endif
   call dap#send_message(dap#build_request('terminate', {'restart': a:restart}))
@@ -203,6 +212,9 @@ function! s:buffer_path(buffer) abort
 endfunction
 
 function! dap#toggle_breakpoint(bufexpr, line) abort
+  if s:debuggee_running && !dap#lang#supports_dynamic_breakpoints(s:last_buffer)
+    throw 'Cannot set breakpoint while program is running.'
+  endif
   let l:buffer = bufnr(a:bufexpr)
   let l:line = line(a:line)
   let l:found = v:false
@@ -331,6 +343,7 @@ function! s:handle_response(data) abort
 
   " Handle failure cases first.
   if !a:data['success']
+    let g:failed_response = a:data
     if l:command == 'initialize'
       call dap#log_error('Initialization failed')
       call s:reset()
@@ -339,7 +352,14 @@ function! s:handle_response(data) abort
     elseif l:command == 'completions'
       call dap#write_completion(a:data['message'])
     else
-      call dap#log_error('Command failed: '.l:command.': '.a:data['message'])
+      if has_key(a:data, 'body') && has_key(a:data['body'], 'error')
+        let l:error = a:data['body']['error']
+        let l:format = l:error['format']
+        let l:variables = get(l:error, 'variables', {})
+        call dap#log_error('Command failed: '.l:command.': '.dap#util#format_string(l:format, l:variables))
+      else
+        call dap#log_error('Command failed: '.l:command.': '.a:data['message'])
+      endif
     endif
     return
   endif
@@ -349,6 +369,8 @@ function! s:handle_response(data) abort
     call dap#log('Initialization successful')
     let s:capabilities = a:data['body']
     call s:handle_initialize_response()
+  elseif l:command == 'configurationDone'
+    let s:debuggee_running = v:true
   elseif l:command == 'launch'
     call s:set_all_breakpoints()
   elseif l:command == 'disconnect'
@@ -389,8 +411,10 @@ function! s:handle_response(data) abort
   elseif l:command == 'scopes'
     call dap#scopes#response(a:data)
   elseif l:command == 'completions'
-    let l:completion_items = a:data['body']['targets']
-    let g:completion_items = l:completion_items
+    let l:completion_items = []
+    if has_key(a:data, 'body') && has_key(a:data['body'], 'targets')
+      let l:completion_items = a:data['body']['targets']
+    endif
     call dap#write_completion(json_encode(l:completion_items))
   elseif l:command == 'variables'
     " A scopes request automatically retrieves its variables, so if this
@@ -421,7 +445,7 @@ function! s:handle_event(data) abort
   if a:data['event'] == 'initialized'
     call s:handle_initialized_event()
   elseif a:data['event'] == 'output'
-    echoerr 'The debuggee should be running in a terminal, no output event is expected.'
+    call s:handle_event_output(a:data['body'])
   elseif a:data['event'] == 'stopped'
     call s:handle_event_stopped(a:data['body'])
   elseif a:data['event'] == 'breakpoint'
@@ -429,12 +453,25 @@ function! s:handle_event(data) abort
   elseif a:data['event'] == 'terminated'
     echomsg 'Adapter terminated.'
     let s:adapter_running = v:false
+    let s:debuggee_running = v:false
     call dap#async#job#stop(s:debug_adapter_job_id)
     call s:reset()
+    if s:tailing_output
+      call system('tmux send-keys -t '.s:output_pane.' C-c')
+      let s:tailing_output = v:false
+    endif
   elseif a:data['event'] == 'exited'
     let s:debuggee_running = v:false
     call s:quit_console()
     echomsg 'Process exited with exit code '.a:data['body']['exitCode']
+  endif
+endfunction
+
+function! s:handle_event_output(body) abort
+  let l:category = get(a:body, 'category', 'console')
+  if l:category == 'console' || l:category == 'stdout' || l:category == 'stderr'
+    let l:lines = split(a:body['output'], '\n')
+    call writefile(l:lines, s:output_file, 'a')
   endif
 endfunction
 
@@ -581,7 +618,6 @@ function! s:add_response_handler(request, handler) abort
 endfunction
 
 function! s:initialize() abort
-  echomsg 'Initializing debug adapter...'
   " TODO: support other arguments?
   call dap#send_message(dap#build_request('initialize', {
         \ 'adapterID': 'vim-dap',
@@ -590,28 +626,6 @@ function! s:initialize() abort
         \ 'columnsStartAt1': v:true,
         \ 'supportsRunInTerminalRequest': v:true,
         \ }))
-endfunction
-
-function! s:set_breakpoints(buffer, signs) abort
-  if s:debug_adapter_job_id == 0
-    call dap#log_error('No debugger session running.')
-    return
-  endif
-  let l:breakpoints = []
-  for l:sign in a:signs
-    call add(l:breakpoints, {'line': l:sign['lnum']})
-  endfor
-  let l:request = {
-        \ 'seq': s:seq,
-        \ 'type': 'request',
-        \ 'command': 'setBreakpoints',
-        \ 'arguments': {
-        \   'source': { 'path': s:buffer_path(a:buffer) },
-        \   'breakpoints': l:breakpoints},
-        \ }
-  let s:seq = s:seq+1
-
-  call dap#send_message(l:request)
 endfunction
 
 function! s:set_all_breakpoints() abort
@@ -646,7 +660,7 @@ function! s:set_all_breakpoints() abort
   endfor
 endfunction
 
-let s:debuggee_pane = 1
+let s:output_pane = 1
 let s:eval_pane = 2
 
 function! s:split_panes() abort
@@ -656,8 +670,14 @@ function! s:split_panes() abort
   call system('tmux select-pane -t 0')
 endfunction
 
+function! dap#tail_output() abort
+  let s:tailing_output = v:true
+  call writefile([], '/tmp/vim-dap.output')
+  call system('tmux send-keys -t '.s:output_pane.' "clear; tail -f '.s:output_file.'" Enter')
+endfunction
+
 function! s:run_debuggee(command) abort
-  call system('tmux send-keys -t '.s:debuggee_pane.' "'.a:command.'" Enter')
+  call system('tmux send-keys -t '.s:output_pane.' "'.a:command.'" Enter')
 endfunction
 
 function! s:run_debug_console(socket) abort
@@ -713,13 +733,10 @@ function! s:handle_debug_console_stdout(chan_id, data, name) abort
   endif
 
   if l:action == ':'
-    echomsg 'Executing command'
     call s:console_command(l:text)
   elseif l:action == '!'
-    echomsg 'Executing evaluation'
     call dap#evaluate(l:text)
   elseif l:action == '?'
-    echomsg 'Executing completions'
     let l:cursor_delim = stridx(l:text, '|')
     let l:cursor_pos = str2nr(l:text[:l:cursor_delim-1])
     let l:line = l:text[l:cursor_delim+1:]
@@ -757,3 +774,5 @@ function! s:quit_console() abort
   call chanclose(s:debug_console_socket)
   let s:debug_console_socket = 0
 endfunction
+
+" vim: set expandtab shiftwidth=2 tabstop=2:
