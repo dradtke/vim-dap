@@ -38,6 +38,13 @@ func main() {
 		}
 	}
 
+	originalTermState, err := readline.GetState(readline.GetStdin())
+	if err != nil {
+		log.Fatalf("failed to get terminal state: %s", err)
+	}
+	defer restore(originalTermState)
+	defer fmt.Println()
+
 	listener, err := net.Listen(*network, *address)
 	if err != nil {
 		log.Fatalf("listen error: %s", err)
@@ -52,6 +59,14 @@ func main() {
 	dc := newDebugConsole(conn)
 	go dc.processInput()
 	dc.shell.Run()
+
+	// fmt.Println("quitting")
+}
+
+func restore(state *readline.State) {
+	if err := readline.Restore(readline.GetStdin(), state); err != nil {
+		log.Printf("failed to restore terminal state: %s", err)
+	}
 }
 
 type debugConsole struct {
@@ -102,18 +117,19 @@ func newDebugConsole(conn net.Conn) *debugConsole {
 	dc.shell.NotFound(dc.cmdEval)
 	dc.shell.EOF(dc.cmdContinue)
 	// Setting an empty interrupt function prevents it from exiting the console.
-	dc.shell.Interrupt(func(c *ishell.Context, count int, input string) {})
+	// dc.shell.Interrupt(func(c *ishell.Context, count int, input string) {})
 
 	return dc
 }
 
 func (dc *debugConsole) processInput() {
-	defer dc.shell.Stop()
+	defer dc.shell.Close()
 
 	r := bufio.NewReader(dc.conn)
 	for {
 		line, err := r.ReadString('\n')
 		if err == io.EOF {
+			dc.conn.Close()
 			return
 		}
 		if err != nil {

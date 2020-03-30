@@ -55,7 +55,7 @@ endfunction
 
 function! dap#restart(buffer) abort
   echomsg 'Restarting debugger'
-  if s:capabilities['supportsRestartRequest']
+  if get(s:capabilities, 'supportsRestartRequest', v:false)
     echoerr 'Fancy restart requested, but not implemented yet.'
   else
     let s:restarting = a:buffer
@@ -456,6 +456,7 @@ function! s:handle_event(data) abort
     let s:debuggee_running = v:false
     call dap#async#job#stop(s:debug_adapter_job_id)
     call s:reset()
+    call s:quit_console()
     if s:tailing_output
       call system('tmux send-keys -t '.s:output_pane.' C-c')
       let s:tailing_output = v:false
@@ -770,9 +771,11 @@ function! s:send_to_console(data) abort
 endfunction
 
 function! s:quit_console() abort
-  " TODO: support Vim 8 equivalent
-  call chanclose(s:debug_console_socket)
-  let s:debug_console_socket = 0
+  if s:debug_console_socket != 0
+    " TODO: support Vim 8 equivalent
+    call chanclose(s:debug_console_socket)
+    let s:debug_console_socket = 0
+  endif
 endfunction
 
 " vim: set expandtab shiftwidth=2 tabstop=2:
