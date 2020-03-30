@@ -9,7 +9,23 @@ readline-enabled debugger console:
 
 ![demo](misc/demo.gif)
 
-So far this has only been tested with
-[eclipse.jdt.ls](https://github.com/eclipse/eclipse.jdt.ls) and
-[java-debug](https://github.com/microsoft/java-debug), but should work for any
-language that has a language server implementing the debug protocol.
+## Supported Languages
+
+This plugin is intended to be as configuration-free as possible, but this section
+will detail existing language support and their requirements.
+
+### Java
+
+Java requires you to be running the [eclipse.jdt.ls](https://github.com/eclipse/eclipse.jdt.ls)
+language server with [java-debug](https://github.com/microsoft/java-debug) installed.
+The `dap#run()` method requires you to be using `LanguageClient-neovim` as your client,
+but `dap#connect()` can be called manually to connect to the debug adapter if it's already
+running.
+
+### Go
+
+First, make sure that you have Delve installed and that `dlv` is available on your PATH.
+
+Second, the debug adapter for Go is implemented as part of `vscode-go`, so your
+system must have Node available in order for it to run (womp womp). It will be
+automatically downloaded on first use.
