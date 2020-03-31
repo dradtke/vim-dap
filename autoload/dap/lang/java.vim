@@ -49,8 +49,9 @@ function! dap#lang#java#launch(buffer, run_args) abort
         echoerr 'Error calling java.project.getClasspaths: '.a:data['error']['message']
         return
       endif
-      " TODO: check for modulepaths
+      let l:project_root = dap#util#uri_to_path(a:data['result']['projectRoot'])
       let l:classpaths = a:data['result']['classpaths']
+      let l:modulepaths = a:data['result']['modulepaths']
 
       let l:package = dap#lang#java#package_name(a:buffer)
       let l:class_name = dap#lang#java#public_class_name(a:buffer)
@@ -64,12 +65,16 @@ function! dap#lang#java#launch(buffer, run_args) abort
               \ 'mainClass': s:test_runner_main_class,
               \ 'args': s:test_runner_args_builder(l:full_class).' '.join(a:run_args, ' '),
               \ 'classPaths': l:classpaths,
+              \ 'modulePaths': l:modulepaths,
+              \ 'cwd': l:project_root,
               \ })
       else
         call dap#launch({
               \ 'mainClass': l:full_class,
               \ 'args': join(a:run_args, ' '),
               \ 'classPaths': l:classpaths,
+              \ 'modulePaths': l:modulepaths,
+              \ 'cwd': l:project_root,
               \ })
       endif
     endfunction

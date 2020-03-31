@@ -22,4 +22,17 @@ function! dap#util#format_string(format, variables) abort
   return l:message
 endfunction
 
+function! dap#util#uri_to_path(uri) abort
+  " This function assumes that uri represents a file, but doesn't verify that.
+  let l:protocol_sep = stridx(a:uri, '://')
+  if l:protocol_sep != -1
+    return a:uri[l:protocol_sep+3:]
+  endif
+  let l:protocol_sep = stridx(a:uri, ':')
+  if l:protocol_sep != -1
+    return a:uri[l:protocol_sep+1:]
+  endif
+  throw 'dap#util#uri_to_path: not a uri: '.a:uri
+endfunction
+
 " vim: set expandtab shiftwidth=2 tabstop=2:
