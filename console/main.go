@@ -117,7 +117,7 @@ func newDebugConsole(conn net.Conn) *debugConsole {
 	dc.shell.NotFound(dc.notFound)
 	dc.shell.EOF(dc.cmdContinue)
 	// Setting an empty interrupt function prevents it from exiting the console.
-	// dc.shell.Interrupt(func(c *ishell.Context, count int, input string) {})
+	dc.shell.Interrupt(func(c *ishell.Context, count int, input string) {})
 
 	return dc
 }
