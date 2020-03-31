@@ -114,7 +114,7 @@ func newDebugConsole(conn net.Conn) *debugConsole {
 	})
 
 	dc.shell.CustomCompleter(dc)
-	dc.shell.NotFound(dc.cmdEval)
+	dc.shell.NotFound(dc.notFound)
 	dc.shell.EOF(dc.cmdContinue)
 	// Setting an empty interrupt function prevents it from exiting the console.
 	// dc.shell.Interrupt(func(c *ishell.Context, count int, input string) {})
@@ -195,8 +195,16 @@ func (dc *debugConsole) cmdContinue(c *ishell.Context) {
 }
 
 func (dc *debugConsole) cmdEval(c *ishell.Context) {
-	dc.writeOutput('!', strings.Join(c.Args, " "))
-	c.Println(color.CyanString(<-dc.results))
+	dc.doEval(c, c.RawArgs[1:])
+}
+
+func (dc *debugConsole) notFound(c *ishell.Context) {
+	dc.doEval(c, c.RawArgs)
+}
+
+func (dc *debugConsole) doEval(a ishell.Actions, args []string) {
+	dc.writeOutput('!', strings.Join(args, " "))
+	a.Println(color.CyanString(<-dc.results))
 }
 
 func (dc *debugConsole) cmdScopes(c *ishell.Context) {

@@ -256,9 +256,9 @@ function! dap#variables(ref) abort
   call dap#send_message(dap#build_request('variables', l:body))
 endfunction
 
-" TODO: don't echo log messages
 function! dap#log(msg) abort
-  echomsg a:msg
+  " TODO: make this configurable?
+  call writefile([a:msg], '/tmp/vim-dap.log', 'a')
 endfunction
 
 function! dap#log_error(msg) abort
@@ -686,7 +686,7 @@ function! s:run_debug_console(socket) abort
     call s:quit_console()
     sleep 1
   endif
-  let l:command = './bin/console -network unix -address '.a:socket.' -log /tmp/vim-dap.log'
+  let l:command = './bin/console -network unix -address '.a:socket.' -log /tmp/vim-dap-console.log'
   call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.s:plugin_home.' && '.l:command.')" Enter')
   let s:debug_console_socket = 0
   echomsg 'Waiting for Debug Console socket to become available...'
@@ -736,6 +736,7 @@ function! s:handle_debug_console_stdout(chan_id, data, name) abort
   if l:action == ':'
     call s:console_command(l:text)
   elseif l:action == '!'
+    call dap#log('evaluating: '.l:text)
     call dap#evaluate(l:text)
   elseif l:action == '?'
     let l:cursor_delim = stridx(l:text, '|')
