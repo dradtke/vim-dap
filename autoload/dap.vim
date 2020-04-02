@@ -33,14 +33,13 @@ if !exists('g:dap_initialized')
 endif
 
 function! dap#run_with_args(buffer, run_args) abort
-  let s:run_args = a:run_args
-  call dap#run(a:buffer)
-endfunction
-
-function! dap#run(buffer) abort
+  if type(a:run_args) != v:t_list
+    throw 'dap#run_with_args(): second argument must be a list'
+  endif
   if str2nr(system('tmux display-message -p "#{window_panes}"')) == 1
     call s:split_panes()
   endif
+  let s:run_args = a:run_args
   let s:last_buffer = bufnr(a:buffer)
   " It's possible that some debuggers will not need to restart their adapter
   " if it's already running, but Java seems to require restarting the whole
@@ -51,6 +50,10 @@ function! dap#run(buffer) abort
     echomsg 'Starting debugger'
     call dap#lang#run(a:buffer, s:run_args)
   endif
+endfunction
+
+function! dap#run(buffer) abort
+  call dap#run_with_args(a:buffer, [])
 endfunction
 
 function! dap#restart(buffer) abort

@@ -11,3 +11,5 @@ command! Restart call dap#restart()
 command! Step call dap#next_stopped()
 command! StepIn call dap#step_in_stopped()
 command! StepOut call dap#step_out_stopped()
+
+" TODO: add a command for showing breakpoint locations in the quickfix window

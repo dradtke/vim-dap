@@ -22,6 +22,18 @@ The `dap#run()` method requires you to be using `LanguageClient-neovim` as your 
 but `dap#connect()` can be called manually to connect to the debug adapter if it's already
 running.
 
+#### Tips
+
+To make it easier to run Java tests, I recommend adding something like this to your `.vimrc`.
+With this in place, you can use `\rb` to run all tests in the current file, `\rf` to only run
+the test which your cursor is in, and `\rl` to re-run the most recent test.
+
+```viml
+au filetype java nmap <Leader>rb :call dap#lang#java#run_test_class()<cr>
+au filetype java nmap <Leader>rf :call dap#lang#java#run_test_method()<cr>
+au filetype java nmap <Leader>rl :call dap#run_last()<cr>
+```
+
 ### Go
 
 First, make sure that you have Delve installed and that `dlv` is available on your PATH.

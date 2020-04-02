@@ -1,5 +1,19 @@
-let s:test_runner_main_class = 'org.junit.runner.JUnitCore'
+let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h:h:h')
+
+" let s:test_runner_main_class = 'org.junit.runner.JUnitCore'
+let s:custom_junit_runner = 'JUnitTestRunner'
+let s:test_runner_main_class = s:custom_junit_runner
 let s:test_runner_args_builder = {mainclass -> mainclass}
+
+function! dap#lang#java#run_test_class() abort
+  call dap#run('%')
+endfunction
+
+function! dap#lang#java#run_test_method() abort
+  let l:class_name = dap#lang#java#full_class_name('%')
+  let l:test_name = dap#lang#java#test_name()
+  call dap#run_with_args('%', [l:class_name.'#'.l:test_name])
+endfunction
 
 function! dap#lang#java#set_test_runner_main_class(class)
   let s:test_runner_main_class = a:class
@@ -53,17 +67,28 @@ function! dap#lang#java#launch(buffer, run_args) abort
       let l:classpaths = a:data['result']['classpaths']
       let l:modulepaths = a:data['result']['modulepaths']
 
-      let l:package = dap#lang#java#package_name(a:buffer)
-      let l:class_name = dap#lang#java#public_class_name(a:buffer)
-      let l:full_class = l:package.'.'.l:class_name
+      let l:args = join(a:run_args, ' ')
+
+      let l:misc = s:plugin_home.'/misc'
+      call add(l:classpaths, l:misc)
+      if s:test_runner_main_class == s:custom_junit_runner && !filereadable(l:misc.'/'.s:custom_junit_runner.'.class')
+        let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.s:custom_junit_runner.'.java"')
+        if v:shell_error
+          throw 'Failed to compile single test runner: '.l:output
+        endif
+      endif
+
       " If this is a test file, execute JUnit and pass the class in as an
       " argument.
       " TODO: shellescape args?
       if l:is_test
-        " TODO: support configuring the test runner
+        " TODO: use s:test_runner_args_builder again
+        if len(a:run_args) == 0
+          let l:args = dap#lang#java#full_class_name(a:buffer)
+        endif
         call dap#launch({
               \ 'mainClass': s:test_runner_main_class,
-              \ 'args': s:test_runner_args_builder(l:full_class).' '.join(a:run_args, ' '),
+              \ 'args': l:args,
               \ 'classPaths': l:classpaths,
               \ 'modulePaths': l:modulepaths,
               \ 'cwd': l:project_root,
@@ -71,7 +96,7 @@ function! dap#lang#java#launch(buffer, run_args) abort
       else
         call dap#launch({
               \ 'mainClass': l:full_class,
-              \ 'args': join(a:run_args, ' '),
+              \ 'args': l:args,
               \ 'classPaths': l:classpaths,
               \ 'modulePaths': l:modulepaths,
               \ 'cwd': l:project_root,
@@ -103,7 +128,7 @@ endfunction
 function! dap#lang#java#package_name(buffer) abort
   let l:package_line = s:find_line(a:buffer, '^package ')
   if l:package_line == ''
-    throw 'No package line found, is the buffer loaded?'
+    return ''
   endif
 
   let l:parts = split(l:package_line)
@@ -118,6 +143,16 @@ function! dap#lang#java#public_class_name(buffer) abort
   endif
   let l:parts = split(l:public_class_line)
   return l:parts[2]
+endfunction
+
+function! dap#lang#java#full_class_name(buffer) abort
+  let l:package_name = dap#lang#java#package_name(a:buffer)
+  let l:class_name = dap#lang#java#public_class_name(a:buffer)
+  if l:package_name == ''
+    return l:class_name
+  else
+    return l:package_name.'.'.l:class_name
+  endif
 endfunction
 
 function! dap#lang#java#test_name() abort
