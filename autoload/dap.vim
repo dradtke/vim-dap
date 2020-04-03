@@ -32,28 +32,28 @@ if !exists('g:dap_initialized')
   call sign_define('dap-stopped', {'text': '⏸'})
 endif
 
-function! dap#run_with_args(buffer, run_args) abort
-  if type(a:run_args) != v:t_list
-    throw 'dap#run_with_args(): second argument must be a list'
+function! dap#run(buffer, ...) abort
+  let s:last_buffer = a:buffer
+  let s:run_args = a:000
+  call dap#run_last()
+endfunction
+
+function! dap#run_last() abort
+  if s:last_buffer == -1
+    throw 'No previous buffer to run.'
   endif
   if str2nr(system('tmux display-message -p "#{window_panes}"')) == 1
     call s:split_panes()
   endif
-  let s:run_args = a:run_args
-  let s:last_buffer = bufnr(a:buffer)
   " It's possible that some debuggers will not need to restart their adapter
   " if it's already running, but Java seems to require restarting the whole
   " thing, so at least for now we'll stick with the nuclear option.
   if s:debuggee_running || s:adapter_running
-    call dap#restart(a:buffer)
+    call dap#restart(s:last_buffer)
   else
     echomsg 'Starting debugger'
-    call dap#lang#run(a:buffer, s:run_args)
+    call dap#lang#run(s:last_buffer, s:run_args)
   endif
-endfunction
-
-function! dap#run(buffer) abort
-  call dap#run_with_args(a:buffer, [])
 endfunction
 
 function! dap#restart(buffer) abort
@@ -68,13 +68,6 @@ endfunction
 
 function! dap#capabilities() abort
   return s:capabilities
-endfunction
-
-function! dap#run_last() abort
-  if s:last_buffer == -1
-    throw 'No previous buffer to run.'
-  endif
-  call dap#run(s:last_buffer)
 endfunction
 
 function! dap#spawn(args) abort

@@ -12,7 +12,7 @@ endfunction
 function! dap#lang#java#run_test_method() abort
   let l:class_name = dap#lang#java#full_class_name('%')
   let l:test_name = dap#lang#java#test_name()
-  call dap#run_with_args('%', [l:class_name.'#'.l:test_name])
+  call dap#run('%', l:class_name.'#'.l:test_name)
 endfunction
 
 function! dap#lang#java#set_test_runner_main_class(class)
