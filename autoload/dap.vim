@@ -196,7 +196,7 @@ endfunction
 
 function! dap#terminate(restart) abort
   if s:adapter_running
-    call system('tmux send-keys -t '.s:output_pane.' C-c')
+    call s:tmux_send_keys(s:output_pane, [])
     call s:quit_console()
   endif
   call dap#send_message(dap#build_request('terminate', {'restart': a:restart}))
@@ -454,7 +454,7 @@ function! s:handle_event(data) abort
     call s:reset()
     call s:quit_console()
     if s:tailing_output
-      call system('tmux send-keys -t '.s:output_pane.' C-c')
+      call s:tmux_send_keys(s:output_pane, [])
       let s:tailing_output = v:false
     endif
   elseif a:data['event'] == 'exited'
@@ -658,7 +658,7 @@ function! s:set_all_breakpoints() abort
 endfunction
 
 let s:output_pane = 1
-let s:eval_pane = 2
+let s:console_pane = 2
 
 function! s:split_panes() abort
   " TODO: make pane sizes configurable
@@ -670,11 +670,11 @@ endfunction
 function! dap#tail_output() abort
   let s:tailing_output = v:true
   call writefile([], '/tmp/vim-dap.output')
-  call system('tmux send-keys -t '.s:output_pane.' "clear; tail -f '.s:output_file.'" Enter')
+  call s:tmux_send_keys(s:output_pane, ['"clear; tail -f '.s:output_file.'"', 'Enter'])
 endfunction
 
 function! s:run_debuggee(command) abort
-  call system('tmux send-keys -t '.s:output_pane.' "'.a:command.'" Enter')
+  call s:tmux_send_keys(s:output_pane, ['"'.a:command.'"', 'Enter'])
 endfunction
 
 function! s:run_debug_console(socket) abort
@@ -683,7 +683,7 @@ function! s:run_debug_console(socket) abort
     sleep 1
   endif
   let l:command = './bin/console -network unix -address '.a:socket.' -log /tmp/vim-dap-console.log'
-  call system('tmux send-keys -t '.s:eval_pane.' "clear; (cd '.s:plugin_home.' && '.l:command.')" Enter')
+  call s:tmux_send_keys(s:console_pane, ['"clear; (cd '.s:plugin_home.' && '.l:command.')"', 'Enter'])
   let s:debug_console_socket = 0
   echomsg 'Waiting for Debug Console socket to become available...'
   while s:debug_console_socket == 0
@@ -773,6 +773,11 @@ function! s:quit_console() abort
     call chanclose(s:debug_console_socket)
     let s:debug_console_socket = 0
   endif
+endfunction
+
+function! s:tmux_send_keys(pane, keys) abort
+  call system('tmux send-keys -t '.a:pane.' C-c')
+  call system('tmux send-keys -t '.a:pane.' '.join(a:keys, ' '))
 endfunction
 
 " vim: set expandtab shiftwidth=2 tabstop=2:
