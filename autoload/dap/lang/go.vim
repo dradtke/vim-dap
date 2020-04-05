@@ -24,7 +24,6 @@ function! dap#lang#go#launch(buffer, run_args)
     throw '"dlv" executable not found'
   endif
   echomsg 'Launching Go'
-  call dap#tail_output()
   let l:buffer_path = getbufinfo(a:buffer)[0]['name']
   " For debugging, set 'trace' to 'verbose'
   let l:args = {

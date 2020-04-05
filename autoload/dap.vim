@@ -28,12 +28,12 @@ if !exists('g:dap_initialized')
   let s:tailing_output = v:false
   let s:output_file = '/tmp/vim-dap.output'
 
-  call sign_define('dap-breakpoint', {'text': '🛑'})
-  call sign_define('dap-stopped', {'text': '⏸'})
+  call sign_define('dap-breakpoint', {'text': 'B'})
+  call sign_define('dap-stopped', {'text': '>'})
 endif
 
 function! dap#run(buffer, ...) abort
-  let s:last_buffer = a:buffer
+  let s:last_buffer = bufnr(a:buffer)
   let s:run_args = a:000
   call dap#run_last()
 endfunction
@@ -44,6 +44,10 @@ function! dap#run_last() abort
   endif
   if str2nr(system('tmux display-message -p "#{window_panes}"')) == 1
     call s:split_panes()
+  endif
+  if s:tailing_output
+    call s:tmux_reset(s:output_pane)
+    let s:tailing_output = v:false
   endif
   " It's possible that some debuggers will not need to restart their adapter
   " if it's already running, but Java seems to require restarting the whole
@@ -196,7 +200,6 @@ endfunction
 
 function! dap#terminate(restart) abort
   if s:adapter_running
-    call s:tmux_send_keys(s:output_pane, [])
     call s:quit_console()
   endif
   call dap#send_message(dap#build_request('terminate', {'restart': a:restart}))
@@ -348,6 +351,9 @@ function! s:handle_response(data) abort
     elseif l:command == 'completions'
       call dap#write_completion(a:data['message'])
     else
+      if l:command == 'setBreakpoints'
+        let g:response = a:data
+      endif
       if has_key(a:data, 'body') && has_key(a:data['body'], 'error')
         let l:error = a:data['body']['error']
         let l:format = l:error['format']
@@ -453,20 +459,30 @@ function! s:handle_event(data) abort
     call dap#async#job#stop(s:debug_adapter_job_id)
     call s:reset()
     call s:quit_console()
-    if s:tailing_output
-      call s:tmux_send_keys(s:output_pane, [])
-      let s:tailing_output = v:false
-    endif
   elseif a:data['event'] == 'exited'
     let s:debuggee_running = v:false
     call s:quit_console()
-    echomsg 'Process exited with exit code '.a:data['body']['exitCode']
+    let l:exit_code = a:data['body']['exitCode']
+    let g:exit_code = l:exit_code
+    if l:exit_code == v:null
+      echomsg 'Process exited'
+    else
+      echomsg 'Process exited with exit code '.a:data['body']['exitCode']
+    endif
   endif
 endfunction
 
 function! s:handle_event_output(body) abort
+  if !s:tailing_output
+    call dap#tail_output()
+    let s:tailing_output = v:true
+  endif
   let l:category = get(a:body, 'category', 'console')
   if l:category == 'console' || l:category == 'stdout' || l:category == 'stderr'
+    "for l:line in split(a:body['output'], '\n')
+    "  let l:command = 'tmux run-shell -t '.s:output_pane.' "echo '.shellescape(l:line).'"'
+    "  call system(l:command)
+    "endfor
     let l:lines = split(a:body['output'], '\n')
     call writefile(l:lines, s:output_file, 'a')
   endif
@@ -625,6 +641,18 @@ function! s:initialize() abort
         \ }))
 endfunction
 
+function! dap#list_breakpoints() abort
+  let l:breakpoints = []
+  for l:item in sign_getplaced('', {'group': 'dap-breakpoint-group'})
+    let l:bufnr = l:item['bufnr']
+    for l:sign in l:item['signs']
+      call add(l:breakpoints, {'bufnr': l:bufnr, 'lnum': l:sign['lnum']})
+    endfor
+  endfor
+  call setloclist(0, l:breakpoints)
+  lopen
+endfunction
+
 function! s:set_all_breakpoints() abort
   if s:debug_adapter_job_id == 0
     call dap#log_error('No debugger session running.')
@@ -668,12 +696,12 @@ function! s:split_panes() abort
 endfunction
 
 function! dap#tail_output() abort
-  let s:tailing_output = v:true
   call writefile([], '/tmp/vim-dap.output')
-  call s:tmux_send_keys(s:output_pane, ['"clear; tail -f '.s:output_file.'"', 'Enter'])
+  call s:tmux_send_keys(s:output_pane, ['"tail -f '.s:output_file.'"', 'Enter'])
 endfunction
 
 function! s:run_debuggee(command) abort
+  let s:output_mode = 'terminal'
   call s:tmux_send_keys(s:output_pane, ['"'.a:command.'"', 'Enter'])
 endfunction
 
@@ -776,8 +804,11 @@ function! s:quit_console() abort
 endfunction
 
 function! s:tmux_send_keys(pane, keys) abort
-  call system('tmux send-keys -t '.a:pane.' C-c')
   call system('tmux send-keys -t '.a:pane.' '.join(a:keys, ' '))
+endfunction
+
+function! s:tmux_reset(pane) abort
+  call system('tmux send-keys -t '.a:pane.' C-c clear Enter')
 endfunction
 
 " vim: set expandtab shiftwidth=2 tabstop=2:
