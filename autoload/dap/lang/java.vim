@@ -64,6 +64,7 @@ function! dap#lang#java#launch(buffer, run_args) abort
         return
       endif
       let l:project_root = dap#util#uri_to_path(a:data['result']['projectRoot'])
+      let l:project_name = fnamemodify(l:project_root, ':t')
       let l:classpaths = a:data['result']['classpaths']
       let l:modulepaths = a:data['result']['modulepaths']
 
@@ -92,6 +93,7 @@ function! dap#lang#java#launch(buffer, run_args) abort
               \ 'classPaths': l:classpaths,
               \ 'modulePaths': l:modulepaths,
               \ 'cwd': l:project_root,
+              \ 'projectName': l:project_name,
               \ })
       else
         call dap#launch({
@@ -100,6 +102,7 @@ function! dap#lang#java#launch(buffer, run_args) abort
               \ 'classPaths': l:classpaths,
               \ 'modulePaths': l:modulepaths,
               \ 'cwd': l:project_root,
+              \ 'projectName': l:project_name,
               \ })
       endif
     endfunction
