@@ -19,10 +19,11 @@ public class JUnitTestRunner {
 
   static class Listener extends RunListener {
     public void testRunStarted(Description description) {
+      final String className = description.getTestClass().getSimpleName();
       if (description.testCount() == 1) {
-        System.out.println("==== Running 1 test... ====");
+        System.out.println("==== Running 1 test in " + className + "... ====");
       } else {
-        System.out.println("==== Running " + description.testCount() + " tests... ====");
+        System.out.println("==== Running " + description.testCount() + " tests in " + className + "... ====");
       }
     }
 

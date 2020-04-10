@@ -528,6 +528,7 @@ function! s:handle_event_stopped_stacktrace(data) abort
   let l:line = l:frame['line']
 
   exec ':keepalt edit +'.l:line.' '.l:path
+  call s:send_to_console('@'.fnamemodify(l:path, ':t').':'.l:line)
   call sign_place(1, 'dap-stopped-group', 'dap-stopped', '%', {'lnum': l:line, 'priority': 11})
 endfunction
 
@@ -573,7 +574,8 @@ function! s:handle_reverse_request(data) abort
     call writefile(['exec '.l:command], l:script)
     " execute 'terminal '.l:command
     if g:dap_use_tmux
-      call s:run_debuggee('clear; sh '.l:script)
+      call s:tmux_reset(s:output_pane)
+      call s:run_debuggee('sh '.l:script)
     else
       " TODO: terminals need to be closed after they exit
       execute 'split | terminal clear; sh '.l:script
@@ -808,7 +810,8 @@ function! s:tmux_send_keys(pane, keys) abort
 endfunction
 
 function! s:tmux_reset(pane) abort
-  call system('tmux send-keys -t '.a:pane.' C-c clear Enter')
+  call system('tmux send-keys -t '.a:pane.' C-c')
+  call system('tmux send-keys -t '.a:pane.' clear Enter')
 endfunction
 
 " vim: set expandtab shiftwidth=2 tabstop=2:

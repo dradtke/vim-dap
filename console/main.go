@@ -58,9 +58,19 @@ func main() {
 
 	dc := newDebugConsole(conn)
 	go dc.processInput()
-	dc.shell.Run()
 
-	// fmt.Println("quitting")
+	for {
+		fmt.Println(color.YellowString("Program is running..."))
+		location, ok := <-dc.ready
+		if !ok {
+			break
+		}
+		color.New(color.FgYellow).Printf("Stopped at %s\n", location)
+		dc.shell.Start()
+		dc.shell.Wait()
+	}
+
+	fmt.Println(color.YellowString("Exiting."))
 }
 
 func restore(state *readline.State) {
@@ -70,9 +80,9 @@ func restore(state *readline.State) {
 }
 
 type debugConsole struct {
-	shell                *ishell.Shell
-	conn                 net.Conn
-	results, completions chan string
+	shell                       *ishell.Shell
+	conn                        net.Conn
+	results, completions, ready chan string
 }
 
 func newDebugConsole(conn net.Conn) *debugConsole {
@@ -81,6 +91,7 @@ func newDebugConsole(conn net.Conn) *debugConsole {
 		shell:       ishell.NewWithConfig(&readline.Config{Prompt: "Debug Console> "}),
 		results:     make(chan string, 1),
 		completions: make(chan string, 1),
+		ready:       make(chan string),
 	}
 
 	dc.shell.AddCmd(&ishell.Cmd{
@@ -108,7 +119,7 @@ func newDebugConsole(conn net.Conn) *debugConsole {
 	})
 	dc.shell.AddCmd(&ishell.Cmd{
 		Name:    "step",
-		Aliases: []string{"next"},
+		Aliases: []string{"next", "s"},
 		Help:    "move forward one step",
 		Func:    dc.cmdStep,
 	})
@@ -129,7 +140,7 @@ func (dc *debugConsole) processInput() {
 	for {
 		line, err := r.ReadString('\n')
 		if err == io.EOF {
-			dc.conn.Close()
+			close(dc.ready)
 			return
 		}
 		if err != nil {
@@ -139,6 +150,8 @@ func (dc *debugConsole) processInput() {
 		indicator := line[0]
 		rest := line[1:]
 		switch indicator {
+		case '@':
+			dc.ready <- rest
 		case '!':
 			dc.results <- rest
 		case '?':
@@ -192,6 +205,8 @@ func (dc debugConsole) Do(line []rune, pos int) ([][]rune, int) {
 func (dc *debugConsole) cmdContinue(c *ishell.Context) {
 	dc.writeOutput(':', "continue")
 	c.Println(color.GreenString("continuing"))
+	c.Println()
+	dc.shell.Stop()
 }
 
 func (dc *debugConsole) cmdEval(c *ishell.Context) {
@@ -234,6 +249,8 @@ func (dc *debugConsole) cmdScopes(c *ishell.Context) {
 func (dc *debugConsole) cmdStep(c *ishell.Context) {
 	dc.writeOutput(':', "next")
 	c.Println(color.GreenString("stepping"))
+	c.Println()
+	dc.shell.Stop()
 }
 
 func (dc *debugConsole) cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
