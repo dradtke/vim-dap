@@ -22,6 +22,17 @@ The `dap#run()` method requires you to be using `LanguageClient-neovim` as your 
 but `dap#connect()` can be called manually to connect to the debug adapter if it's already
 running.
 
+In order to run the language server with debug support, you will need to add something
+like this to your `settings.json` file:
+
+```json
+{
+  "initializationOptions": {
+    "bundles": ["/path/to/java-debug.jar"]
+  }
+}
+```
+
 #### Tips
 
 To make it easier to run Java tests, I recommend adding something like this to your `.vimrc`.
