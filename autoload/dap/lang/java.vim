@@ -63,6 +63,8 @@ function! dap#lang#java#launch(buffer, run_args) abort
         echoerr 'Error calling java.project.getClasspaths: '.a:data['error']['message']
         return
       endif
+      let g:is_test = l:is_test
+      let g:result = a:data
       let l:project_root = dap#util#uri_to_path(a:data['result']['projectRoot'])
       let l:project_name = fnamemodify(l:project_root, ':t')
       let l:classpaths = a:data['result']['classpaths']
@@ -94,15 +96,17 @@ function! dap#lang#java#launch(buffer, run_args) abort
               \ 'modulePaths': l:modulepaths,
               \ 'cwd': l:project_root,
               \ 'projectName': l:project_name,
+              \ 'shortenCommandLine': 'jarmanifest',
               \ })
       else
         call dap#launch({
-              \ 'mainClass': l:full_class,
+              \ 'mainClass': dap#lang#java#full_class_name(a:buffer),
               \ 'args': l:args,
               \ 'classPaths': l:classpaths,
               \ 'modulePaths': l:modulepaths,
               \ 'cwd': l:project_root,
               \ 'projectName': l:project_name,
+              \ 'shortenCommandLine': 'jarmanifest',
               \ })
       endif
     endfunction

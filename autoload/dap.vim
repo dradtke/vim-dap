@@ -96,7 +96,7 @@ function! dap#connect(port) abort
     call dap#log_error('Already connected.')
     return
   endif
-  call dap#log('Connecting to debugger on port '.a:port.'...')
+  call dap#log('Connecting to debugger on port '.a:port)
   call dap#spawn(['nc', 'localhost', a:port])
 endfunction
 
@@ -257,7 +257,14 @@ endfunction
 
 function! dap#log(msg) abort
   " TODO: make this configurable?
-  call writefile([a:msg], '/tmp/vim-dap.log', 'a')
+  let l:logfile = '/tmp/vim-dap.log'
+  if type(a:msg) == v:t_list
+    call writefile(a:msg, l:logfile, 'a')
+  elseif type(a:msg) == v:t_string
+    call writefile([a:msg], l:logfile, 'a')
+  else
+    echoerr 'dap#log: unexpected message type: '.type(a:msg)
+  endif
 endfunction
 
 function! dap#log_error(msg) abort
@@ -307,6 +314,9 @@ endfunction
 let s:message_buffer = ''
 
 function! s:handle_stdout(job_id, data, event_type) abort
+  " for l:line in a:data
+  "   call dap#log('stdout: '.l:line)
+  " endfor
   let s:message_buffer .= join(a:data, "\n")
 
   while v:true
@@ -443,7 +453,7 @@ function! s:handle_initialized_event() abort
 endfunction
 
 function! s:handle_event(data) abort
-  echomsg 'Handling event: '.a:data['event']
+  call dap#log('Received event: '.a:data['event'])
   if a:data['event'] == 'initialized'
     call s:handle_initialized_event()
   elseif a:data['event'] == 'output'
@@ -570,33 +580,39 @@ function! s:handle_reverse_request(data) abort
       let l:command = l:env.' '.l:command
     endif
 
-    let l:script = '/tmp/vim-dap-debug.sh'
-    call writefile(['exec '.l:command], l:script)
-    " execute 'terminal '.l:command
+    " let l:script = '/tmp/vim-dap-debug.sh'
+    " call writefile(['exec '.l:command], l:script)
     if g:dap_use_tmux
       call s:tmux_reset(s:output_pane)
-      call s:run_debuggee('sh '.l:script)
+      " call s:run_debuggee('sh '.l:script)
+      call s:run_debuggee(l:command)
     else
       " TODO: terminals need to be closed after they exit
+      " execute 'terminal '.l:command
       execute 'split | terminal clear; sh '.l:script
     endif
-    let l:pid = trim(system('pgrep -f "sh '.l:script.'"'))
+    " let l:pid = trim(system('pgrep -f "sh '.l:script.'"'))
+    let l:pid = trim(system('pgrep -f "'.l:command.'"'))
     call dap#send_message(s:build_response(a:data, v:true, {'processId': l:pid}))
   endif
 endfunction
 
 function! s:handle_stderr(job_id, data, event_type) abort
-  " echomsg 'stderr: '.join(a:data, "\n")
+  " for l:line in a:data
+  "   call dap#log('stderr: '.l:line)
+  " endfor
 endfunction
 
 function! s:handle_exit(job_id, data, event_type) abort
   " no op
+  call dap#log('job exited')
 endfunction
 
 function! dap#send_message(body) abort
   let l:encoded_body = json_encode(a:body)
   let l:content_length = strlen(l:encoded_body)
-  call dap#async#job#send(s:debug_adapter_job_id, "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body)
+  let l:message = "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body
+  call dap#async#job#send(s:debug_adapter_job_id, l:message)
 endfunction
 
 function! dap#build_request(command, arguments) abort
@@ -634,6 +650,7 @@ endfunction
 
 function! s:initialize() abort
   " TODO: support other arguments?
+  call dap#log('Initializing...')
   call dap#send_message(dap#build_request('initialize', {
         \ 'adapterID': 'vim-dap',
         \ 'pathFormat': 'path',
@@ -712,19 +729,25 @@ function! s:run_debug_console(socket) abort
     call s:quit_console()
     sleep 1
   endif
+  if !executable(s:plugin_home.'/bin/console') || getfsize(s:plugin_home.'/bin/console') == 0
+    throw 'Console is either not executable or empty, did you install it correctly?'
+  endif
   let l:command = './bin/console -network unix -address '.a:socket.' -log /tmp/vim-dap-console.log'
   call s:tmux_send_keys(s:console_pane, ['"clear; (cd '.s:plugin_home.' && '.l:command.')"', 'Enter'])
   let s:debug_console_socket = 0
-  echomsg 'Waiting for Debug Console socket to become available...'
+  let l:try = 1
   while s:debug_console_socket == 0
     try
       " TODO: support Vim 8 equivalent
       let s:debug_console_socket = sockconnect('pipe', a:socket, {'on_data': function('s:handle_debug_console_stdout')})
     catch
+      let l:try = l:try+1
+      if l:try > 10
+        throw 'Debug Console socket never became available'
+      endif
       sleep 100m
     endtry
   endwhile
-  echomsg 'Connected to Debug Console.'
 endfunction
 
 function! dap#get_job_id() abort
@@ -773,7 +796,6 @@ function! s:handle_debug_console_stdout(chan_id, data, name) abort
 endfunction
 
 function! s:console_command(command) abort
-  echomsg 'Executing command: '.a:command
   if a:command == 'continue'
     call dap#continue_stopped()
   elseif a:command == 'scopes'
@@ -794,7 +816,7 @@ endfunction
 function! s:send_to_console(data) abort
   " TODO: support Vim 8 equivalent
   " An empty string is written to make sure a final newline is sent.
-  call chansend(s:debug_console_socket, [a:data, ''])
+  call dap#async#job#send(s:debug_console_socket, [a:data, ''])
 endfunction
 
 function! s:quit_console() abort
