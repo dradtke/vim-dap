@@ -23,15 +23,24 @@ func main() {
 	log.SetFlags(log.Ltime | log.Lshortfile)
 
 	var (
-		network = flag.String("network", "", "network to connect with")
-		address = flag.String("address", "", "address to listen on")
-		logfile = flag.String("log", "", "path to log file")
+		addrfile = flag.String("addrfile", "", "file to write connection information to")
+		logfile  = flag.String("log", "", "path to log file")
 	)
 	flag.Parse()
 
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("console panicked: %s", r)
+		}
+	}()
+
+	if *addrfile == "" {
+		panic("-addrfile not specified")
+	}
+
 	if *logfile != "" {
 		if f, err := os.Create(*logfile); err != nil {
-			log.Fatal(err)
+			panic(err)
 		} else {
 			log.SetOutput(f)
 			defer f.Close()
@@ -40,20 +49,26 @@ func main() {
 
 	originalTermState, err := readline.GetState(readline.GetStdin())
 	if err != nil {
-		log.Fatalf("failed to get terminal state: %s", err)
+		panic("failed to get terminal state: " + err.Error())
 	}
 	defer restore(originalTermState)
 	defer fmt.Println()
 
-	listener, err := net.Listen(*network, *address)
+	// Listen to localhost on ipv4, and get a randomly-assigned port.
+	listener, err := net.Listen("tcp", "127.0.0.1:")
 	if err != nil {
-		log.Fatalf("listen error: %s", err)
+		panic("listen error: " + err.Error())
 	}
 	defer listener.Close()
 
+	if err := ioutil.WriteFile(*addrfile, []byte(listener.Addr().String()), 0644); err != nil {
+		panic("failed to write addrfile: " + err.Error())
+	}
+	defer os.Remove(*addrfile)
+
 	conn, err := listener.Accept()
 	if err != nil {
-		log.Fatalf("failed to accept connection: %s", err)
+		panic("failed to accept connection: " + err.Error())
 	}
 
 	dc := newDebugConsole(conn)
@@ -144,7 +159,7 @@ func (dc *debugConsole) processInput() {
 			return
 		}
 		if err != nil {
-			log.Fatalf("error reading input: %s", err)
+			panic("error reading input: %s" + err.Error())
 		}
 
 		indicator := line[0]
@@ -168,7 +183,7 @@ func (dc *debugConsole) processInput() {
 func (dc *debugConsole) writeOutput(action rune, line string) {
 	expr := string(action) + line
 	if _, err := fmt.Fprintf(dc.conn, "%d#%s\n", len(expr), expr); err != nil {
-		log.Fatalf("failed to write to input socket: %s", err)
+		panic("failed to write to input socket: " + err.Error())
 	}
 }
 
@@ -232,7 +247,7 @@ func (dc *debugConsole) cmdScopes(c *ishell.Context) {
 
 	var scopes map[string][]variable
 	if err := json.Unmarshal([]byte(<-dc.results), &scopes); err != nil {
-		log.Fatalf("failed to parse scopes: %s", err)
+		panic("failed to parse scopes: %s" + err.Error())
 	}
 
 	cf := color.CyanString
@@ -274,7 +289,7 @@ func (dc *debugConsole) cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
 
 	var items []map[string]interface{}
 	if err := json.Unmarshal([]byte(<-dc.completions), &items); err != nil {
-		log.Fatalf("failed to parse completion items: %s", err)
+		panic("failed to parse completion items: %s" + err.Error())
 	}
 
 	if len(items) == 0 {

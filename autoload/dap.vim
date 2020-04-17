@@ -9,7 +9,7 @@ if !has('nvim') && !has('channel')
 endif
 
 if !exists('g:dap_initialized')
-  let s:debug_adapter_job_id = 0
+  let s:debug_adapter_job = 0
   let s:debug_console_socket = 0
   let s:seq = 1
   let s:last_buffer = -1
@@ -26,7 +26,9 @@ if !exists('g:dap_initialized')
   let g:dap_initialized = v:true
   let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h')
   let s:tailing_output = v:false
-  let s:output_file = '/tmp/vim-dap.output'
+  let s:temp = '/tmp/vim-dap'
+  call mkdir(s:temp, 'p')
+  let s:output_file = s:temp.'/output'
 
   call sign_define('dap-breakpoint', {'text': 'B'})
   call sign_define('dap-stopped', {'text': '>'})
@@ -75,16 +77,11 @@ function! dap#capabilities() abort
 endfunction
 
 function! dap#spawn(args) abort
-  if s:debug_adapter_job_id > 0
+  if s:debug_adapter_job > 0
     call dap#log_error('Already connected.')
     return
   endif
-  let s:debug_adapter_job_id = dap#async#job#start(a:args, {
-        \ 'on_stdout': function('s:handle_stdout'),
-        \ 'on_stderr': function('s:handle_stderr'),
-        \ 'on_exit': function('s:handle_exit'),
-        \ })
-
+  let s:debug_adapter_job = dap#io#jobstart(a:args, function('s:handle_stdout'), function('s:handle_stderr'), function('s:handle_exit'))
   call s:initialize()
 endfunction
 
@@ -92,7 +89,7 @@ function! dap#connect(port) abort
   if !executable('nc')
     throw 'command "nc" not found! please install netcat and try again'
   endif
-  if s:debug_adapter_job_id > 0
+  if s:debug_adapter_job > 0
     call dap#log_error('Already connected.')
     return
   endif
@@ -101,7 +98,7 @@ function! dap#connect(port) abort
 endfunction
 
 function! dap#disconnect(restart) abort
-  if s:debug_adapter_job_id == 0
+  if s:is_zero(s:debug_adapter_job)
     call dap#log_error('No connection to disconnect from.')
     return
   endif
@@ -109,7 +106,7 @@ function! dap#disconnect(restart) abort
 endfunction
 
 function! dap#is_connected() 
-  return s:debug_adapter_job_id > 0
+  return !s:is_zero(s:debug_adapter_job)
 endfunction
 
 function! dap#adapter_running()
@@ -121,7 +118,7 @@ function! dap#debuggee_running()
 endfunction
 
 function! dap#get_capabilities() abort
-  if s:debug_adapter_job_id == 0
+  if s:is_zero(s:debug_adapter_job)
     call dap#log_error('No debugger session running.')
     return v:null
   endif
@@ -131,7 +128,7 @@ endfunction
 " NOTE: In order to run JUnit, you need to specify a mainClass of
 " org.junit.runner.JUnitCore along with an array of classpaths.
 function! dap#launch(arguments) abort
-  if s:debug_adapter_job_id == 0
+  if s:is_zero(s:debug_adapter_job)
     echoerr 'No debug session running.'
     return
   endif
@@ -257,7 +254,7 @@ endfunction
 
 function! dap#log(msg) abort
   " TODO: make this configurable?
-  let l:logfile = '/tmp/vim-dap.log'
+  let l:logfile = s:temp.'/log'
   if type(a:msg) == v:t_list
     call writefile(a:msg, l:logfile, 'a')
   elseif type(a:msg) == v:t_string
@@ -272,7 +269,7 @@ function! dap#log_error(msg) abort
 endfunction
 
 function! s:reset()
-  let s:debug_adapter_job_id = 0
+  let s:debug_adapter_job = 0
   let s:seq = 1
 endfunction
 
@@ -313,11 +310,8 @@ endfunction
 
 let s:message_buffer = ''
 
-function! s:handle_stdout(job_id, data, event_type) abort
-  " for l:line in a:data
-  "   call dap#log('stdout: '.l:line)
-  " endfor
-  let s:message_buffer .= join(a:data, "\n")
+function! s:handle_stdout(data) abort
+  let s:message_buffer .= s:string(a:data, "\n")
 
   while v:true
     let l:message = s:parse_message(s:message_buffer)
@@ -387,7 +381,7 @@ function! s:handle_response(data) abort
     call s:set_all_breakpoints()
   elseif l:command == 'disconnect'
     let s:adapter_running = v:false
-    call dap#async#job#stop(s:debug_adapter_job_id)
+    call dap#io#jobstop(s:debug_adapter_job)
     call s:reset()
     if s:restarting != v:null
       call dap#run(s:restarting)
@@ -442,9 +436,7 @@ endfunction
 function! s:handle_initialize_response() abort
   call dap#lang#initialized(s:last_buffer, s:run_args)
 
-  let l:socket = '/tmp/vim-dap.sock'
-  call delete(l:socket)
-  call s:run_debug_console(l:socket)
+  call s:run_debug_console()
 endfunction
 
 function! s:handle_initialized_event() abort
@@ -466,7 +458,7 @@ function! s:handle_event(data) abort
     echomsg 'Adapter terminated.'
     let s:adapter_running = v:false
     let s:debuggee_running = v:false
-    call dap#async#job#stop(s:debug_adapter_job_id)
+    call dap#io#jobstop(s:debug_adapter_job)
     call s:reset()
     call s:quit_console()
   elseif a:data['event'] == 'exited'
@@ -597,22 +589,21 @@ function! s:handle_reverse_request(data) abort
   endif
 endfunction
 
-function! s:handle_stderr(job_id, data, event_type) abort
+function! s:handle_stderr(data) abort
   " for l:line in a:data
   "   call dap#log('stderr: '.l:line)
   " endfor
 endfunction
 
-function! s:handle_exit(job_id, data, event_type) abort
-  " no op
-  call dap#log('job exited')
+function! s:handle_exit(exit_code) abort
+  call dap#log('job exited with exit code '.a:exit_code)
 endfunction
 
 function! dap#send_message(body) abort
   let l:encoded_body = json_encode(a:body)
   let l:content_length = strlen(l:encoded_body)
   let l:message = "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body
-  call dap#async#job#send(s:debug_adapter_job_id, l:message)
+  call dap#io#send(s:debug_adapter_job, l:message)
 endfunction
 
 function! dap#build_request(command, arguments) abort
@@ -673,7 +664,7 @@ function! dap#list_breakpoints() abort
 endfunction
 
 function! s:set_all_breakpoints() abort
-  if s:debug_adapter_job_id == 0
+  if s:is_zero(s:debug_adapter_job)
     call dap#log_error('No debugger session running.')
     return
   endif
@@ -724,7 +715,18 @@ function! s:run_debuggee(command) abort
   call s:tmux_send_keys(s:output_pane, ['"'.a:command.'"', 'Enter'])
 endfunction
 
-function! s:run_debug_console(socket) abort
+function! s:wait_for_file(path) abort
+  let l:try = 0
+  while !filereadable(a:path)
+    let l:try = l:try+1
+    if l:try > 10
+      throw 'File never appeared: '.a:path
+    endif
+    sleep 100m
+  endwhile
+endfunction
+
+function! s:run_debug_console() abort
   if s:debug_console_socket != 0
     call s:quit_console()
     sleep 1
@@ -732,26 +734,16 @@ function! s:run_debug_console(socket) abort
   if !executable(s:plugin_home.'/bin/console') || getfsize(s:plugin_home.'/bin/console') == 0
     throw 'Console is either not executable or empty, did you install it correctly?'
   endif
-  let l:command = './bin/console -network unix -address '.a:socket.' -log /tmp/vim-dap-console.log'
+  let l:addrfile = s:temp.'/console-addr'
+  let l:command = './bin/console -addrfile '.l:addrfile.' -log '.s:temp.'/console-log'
   call s:tmux_send_keys(s:console_pane, ['"clear; (cd '.s:plugin_home.' && '.l:command.')"', 'Enter'])
   let s:debug_console_socket = 0
-  let l:try = 1
-  while s:debug_console_socket == 0
-    try
-      " TODO: support Vim 8 equivalent
-      let s:debug_console_socket = sockconnect('pipe', a:socket, {'on_data': function('s:handle_debug_console_stdout')})
-    catch
-      let l:try = l:try+1
-      if l:try > 10
-        throw 'Debug Console socket never became available'
-      endif
-      sleep 100m
-    endtry
-  endwhile
+  call s:wait_for_file(l:addrfile)
+  let s:debug_console_socket = dap#io#sockconnect(readfile(l:addrfile)[0], function('s:handle_debug_console_stdout'))
 endfunction
 
-function! dap#get_job_id() abort
-  return s:debug_adapter_job_id
+function! dap#get_job() abort
+  return s:debug_adapter_job
 endfunction
 
 let s:console_buffer = ''
@@ -760,8 +752,8 @@ function! dap#get_console_buffer() abort
   return s:console_buffer
 endfunction
 
-function! s:handle_debug_console_stdout(chan_id, data, name) abort
-  let s:console_buffer .= join(a:data, "")
+function! s:handle_debug_console_stdout(data) abort
+  let s:console_buffer .= s:string(a:data, '')
   let l:len_delim = stridx(s:console_buffer, '#')
   if l:len_delim == -1
     return
@@ -816,13 +808,12 @@ endfunction
 function! s:send_to_console(data) abort
   " TODO: support Vim 8 equivalent
   " An empty string is written to make sure a final newline is sent.
-  call dap#async#job#send(s:debug_console_socket, [a:data, ''])
+  call dap#io#send(s:debug_console_socket, a:data."\n")
 endfunction
 
 function! s:quit_console() abort
-  if s:debug_console_socket != 0
-    " TODO: support Vim 8 equivalent
-    call chanclose(s:debug_console_socket)
+  if !s:is_zero(s:debug_console_socket)
+    call dap#io#sockclose(s:debug_console_socket)
     let s:debug_console_socket = 0
   endif
 endfunction
@@ -834,6 +825,23 @@ endfunction
 function! s:tmux_reset(pane) abort
   call system('tmux send-keys -t '.a:pane.' C-c')
   call system('tmux send-keys -t '.a:pane.' clear Enter')
+endfunction
+
+function! s:is_zero(value)
+  return type(a:value) == v:t_number && a:value == 0
+endfunction
+
+" Neovim invokes callbacks with lists of strings, and Vim invokes them
+" with just strings. This method normalizes the two results into a string,
+" joined by sep if needed.
+function! s:string(value, sep) abort
+  if type(a:value) == v:t_list
+    return trim(join(a:value, a:sep))
+  elseif type(a:value) == v:t_string
+    return trim(a:value)
+  else
+    throw 'unsupported type passed to s:string(): '.type(a:value)
+  endif
 endfunction
 
 " vim: set expandtab shiftwidth=2 tabstop=2:
