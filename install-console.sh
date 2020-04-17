@@ -3,7 +3,7 @@
 cd "$(dirname "${BASH_SOURCE[0]}")"
 mkdir -p bin
 
-version="0.1.2"
+version="0.2.0"
 os="$(uname -s)"
 arch="$(uname -m)"
 
