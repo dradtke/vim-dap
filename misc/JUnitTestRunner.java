@@ -1,3 +1,4 @@
+import org.junit.Ignore;
 import org.junit.runner.Description;
 import org.junit.runner.JUnitCore;
 import org.junit.runner.Request;
@@ -36,7 +37,7 @@ public class JUnitTestRunner {
     }
 
     public void testIgnored(Description description) {
-      System.out.println("| ignoring " + name(description));
+      System.out.println("| ignoring " + name(description) + reason(description));
     }
 
     public void testRunFinished(Result result) {
@@ -55,6 +56,14 @@ public class JUnitTestRunner {
       return description.isTest()
         ? name.substring(0, name.indexOf("("))
         : name;
+    }
+
+    private String reason(Description description) {
+      Ignore annotation = description.getAnnotation(Ignore.class);
+      if (annotation == null || annotation.value() == null) {
+        return "";
+      }
+      return " (" + annotation.value() + ")";
     }
   }
 }
