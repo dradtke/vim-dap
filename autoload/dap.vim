@@ -219,7 +219,7 @@ function! dap#toggle_breakpoint(bufexpr, line) abort
   if empty(l:existing)
     call sign_place(0, 'dap-breakpoint-group', 'dap-breakpoint', l:buffer, {'lnum': l:line})
   else
-    call sign_unplace('dap-breakpoint-group', {'buffer': l:buffer, 'lnum': l:line})
+    call sign_unplace('dap-breakpoint-group', {'buffer': l:buffer, 'id': l:existing[0]['id']})
   endif
 endfunction
 
@@ -355,9 +355,6 @@ function! s:handle_response(data) abort
     elseif l:command == 'completions'
       call dap#write_completion(a:data['message'])
     else
-      if l:command == 'setBreakpoints'
-        let g:response = a:data
-      endif
       if has_key(a:data, 'body') && has_key(a:data['body'], 'error')
         let l:error = a:data['body']['error']
         let l:format = l:error['format']
@@ -569,7 +566,7 @@ function! s:handle_reverse_request(data) abort
           let l:env .= ' '.l:key.'='.shellescape(l:value)
         endfor
       endif
-      let l:command = l:env.' '.l:command
+      let l:command = 'clear && '.l:env.' '.l:command
     endif
 
     " let l:script = '/tmp/vim-dap-debug.sh'
@@ -652,15 +649,33 @@ function! s:initialize() abort
 endfunction
 
 function! dap#list_breakpoints() abort
-  let l:breakpoints = []
-  for l:item in sign_getplaced('', {'group': 'dap-breakpoint-group'})
-    let l:bufnr = l:item['bufnr']
-    for l:sign in l:item['signs']
-      call add(l:breakpoints, {'bufnr': l:bufnr, 'lnum': l:sign['lnum']})
+  let l:list = []
+  for [l:bufnr, l:lines] in items(s:get_breakpoints())
+    for l:lnum in l:lines
+      call add(l:list, {'bufnr': l:bufnr, 'lnum': l:lnum})
     endfor
   endfor
-  call setloclist(0, l:breakpoints)
+
+  call setloclist(0, l:list)
   lopen
+endfunction
+
+function! s:get_breakpoints() abort
+  let l:breakpoints = {}
+  for l:buffer in getbufinfo()
+    let l:bufnr = l:buffer['bufnr']
+    let l:signs = sign_getplaced(l:bufnr, {'group': 'dap-breakpoint-group'})
+    if empty(l:signs)
+      continue
+    endif
+    let l:breakpoints[l:bufnr] = []
+    for l:item in l:signs
+      for l:sign in l:item['signs']
+        call add(l:breakpoints[l:bufnr], l:sign['lnum'])
+      endfor
+    endfor
+  endfor
+  return l:breakpoints
 endfunction
 
 function! s:set_all_breakpoints() abort
@@ -676,13 +691,15 @@ function! s:set_all_breakpoints() abort
   " configurationDone will be sent.
 
   let l:requests = []
-  for l:item in sign_getplaced('', {'group': 'dap-breakpoint-group'})
+  echomsg 'Setting all breakpoints'
+  for [l:bufnr, l:lines] in items(s:get_breakpoints())
+    echomsg 'Setting breakpoints for buffer '.l:bufnr
     let l:breakpoints = []
-    for l:sign in l:item['signs']
-      call add(l:breakpoints, {'line': l:sign['lnum']})
+    for l:lnum in l:lines
+      call add(l:breakpoints, {'line': l:lnum})
     endfor
     let l:request = dap#build_request('setBreakpoints', {
-        \   'source': { 'path': s:buffer_path(l:item['bufnr']) },
+        \   'source': { 'path': s:buffer_path(l:bufnr) },
         \   'breakpoints': l:breakpoints,
         \ })
     " TODO: use closure functions instead?
@@ -727,7 +744,7 @@ function! s:wait_for_file(path) abort
 endfunction
 
 function! s:run_debug_console() abort
-  if s:debug_console_socket != 0
+  if !s:is_zero(s:debug_console_socket)
     call s:quit_console()
     sleep 1
   endif
