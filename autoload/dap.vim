@@ -27,6 +27,7 @@ if !exists('g:dap_initialized')
   let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h')
   let s:tailing_output = v:false
   let s:temp = '/tmp/vim-dap'
+  call delete(s:temp, 'rf')
   call mkdir(s:temp, 'p')
   let s:output_file = s:temp.'/output'
 
@@ -698,13 +699,16 @@ function! s:set_all_breakpoints() abort
     for l:lnum in l:lines
       call add(l:breakpoints, {'line': l:lnum})
     endfor
-    let l:request = dap#build_request('setBreakpoints', {
-        \   'source': { 'path': s:buffer_path(l:bufnr) },
-        \   'breakpoints': l:breakpoints,
-        \ })
-    " TODO: use closure functions instead?
-    let s:configuration_done_guard[l:request['seq']] = v:true
-    call add(l:requests, l:request)
+    let l:path = s:buffer_path(l:bufnr)
+    if !empty(l:path)
+      let l:request = dap#build_request('setBreakpoints', {
+          \   'source': { 'path': l:path },
+          \   'breakpoints': l:breakpoints,
+          \ })
+      " TODO: use closure functions instead?
+      let s:configuration_done_guard[l:request['seq']] = v:true
+      call add(l:requests, l:request)
+    endif
   endfor
 
   for l:request in l:requests
