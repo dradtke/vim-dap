@@ -1,4 +1,5 @@
 let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h:h:h')
+let s:current_buffer = v:null
 
 " let s:test_runner_main_class = 'org.junit.runner.JUnitCore'
 let s:custom_junit_runner = 'JUnitTestRunner'
@@ -44,6 +45,10 @@ function! dap#lang#java#run(buffer) abort
       endif
     endfunction
 
+    if &filetype != 'java'
+      let s:current_buffer = bufnr('%')
+      execute 'hide buffer '.a:buffer
+    endif
     call dap#lsp#execute_command('vscode.java.startDebugSession', [], function('s:start_callback'))
   endif
 endfunction
@@ -108,6 +113,11 @@ function! dap#lang#java#launch(buffer, run_args) abort
               \ 'projectName': l:project_name,
               \ 'shortenCommandLine': 'jarmanifest',
               \ })
+      endif
+
+      if s:current_buffer != v:null
+        execute 'hide buffer '.s:current_buffer
+        let s:current_buffer = v:null
       endif
     endfunction
 
