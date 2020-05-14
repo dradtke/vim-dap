@@ -218,7 +218,7 @@ function! dap#toggle_breakpoint(bufexpr, line) abort
 
   let l:existing = sign_getplaced(l:buffer, {'group': 'dap-breakpoint-group', 'lnum': l:line})[0]['signs']
   if empty(l:existing)
-    call sign_place(0, 'dap-breakpoint-group', 'dap-breakpoint', l:buffer, {'lnum': l:line})
+    call sign_place(0, 'dap-breakpoint-group', 'dap-breakpoint', l:buffer, {'lnum': l:line, 'priority': 98})
   else
     call sign_unplace('dap-breakpoint-group', {'buffer': l:buffer, 'id': l:existing[0]['id']})
   endif
@@ -529,7 +529,7 @@ function! s:handle_event_stopped_stacktrace(data) abort
 
   exec ':keepalt edit +'.l:line.' '.l:path
   call s:send_to_console('@'.fnamemodify(l:path, ':t').':'.l:line)
-  call sign_place(1, 'dap-stopped-group', 'dap-stopped', '%', {'lnum': l:line, 'priority': 11})
+  call sign_place(1, 'dap-stopped-group', 'dap-stopped', '%', {'lnum': l:line, 'priority': 99})
 endfunction
 
 function! s:handle_event_breakpoint(body) abort
