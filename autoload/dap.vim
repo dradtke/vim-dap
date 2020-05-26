@@ -10,7 +10,7 @@ endif
 
 if !exists('g:dap_initialized')
   let s:debug_adapter_job = 0
-  let s:debug_console_socket = 0
+  let s:debug_console_socket = -1
   let s:seq = 1
   let s:last_buffer = -1
   let s:run_args = []
@@ -78,7 +78,7 @@ function! dap#capabilities() abort
 endfunction
 
 function! dap#spawn(args) abort
-  if s:debug_adapter_job > 0
+  if s:is_open_socket_or_job(s:debug_adapter_job)
     call dap#log_error('Already connected.')
     return
   endif
@@ -90,7 +90,7 @@ function! dap#connect(port) abort
   if !executable('nc')
     throw 'command "nc" not found! please install netcat and try again'
   endif
-  if s:debug_adapter_job > 0
+  if s:is_open_socket_or_job(s:debug_adapter_job)
     call dap#log_error('Already connected.')
     return
   endif
@@ -99,7 +99,7 @@ function! dap#connect(port) abort
 endfunction
 
 function! dap#disconnect(restart) abort
-  if s:is_zero(s:debug_adapter_job)
+  if !s:is_open_socket_or_job(s:debug_adapter_job)
     call dap#log_error('No connection to disconnect from.')
     return
   endif
@@ -107,7 +107,7 @@ function! dap#disconnect(restart) abort
 endfunction
 
 function! dap#is_connected() 
-  return !s:is_zero(s:debug_adapter_job)
+  return s:is_open_socket_or_job(s:debug_adapter_job)
 endfunction
 
 function! dap#adapter_running()
@@ -119,7 +119,7 @@ function! dap#debuggee_running()
 endfunction
 
 function! dap#get_capabilities() abort
-  if s:is_zero(s:debug_adapter_job)
+  if !s:is_open_socket_or_job(s:debug_adapter_job)
     call dap#log_error('No debugger session running.')
     return v:null
   endif
@@ -129,7 +129,7 @@ endfunction
 " NOTE: In order to run JUnit, you need to specify a mainClass of
 " org.junit.runner.JUnitCore along with an array of classpaths.
 function! dap#launch(arguments) abort
-  if s:is_zero(s:debug_adapter_job)
+  if !s:is_open_socket_or_job(s:debug_adapter_job)
     echoerr 'No debug session running.'
     return
   endif
@@ -680,7 +680,7 @@ function! s:get_breakpoints() abort
 endfunction
 
 function! s:set_all_breakpoints() abort
-  if s:is_zero(s:debug_adapter_job)
+  if !s:is_open_socket_or_job(s:debug_adapter_job)
     call dap#log_error('No debugger session running.')
     return
   endif
@@ -748,7 +748,7 @@ function! s:wait_for_file(path) abort
 endfunction
 
 function! s:run_debug_console() abort
-  if !s:is_zero(s:debug_console_socket)
+  if s:is_open_socket_or_job(s:debug_console_socket)
     call s:quit_console()
     sleep 1
   endif
@@ -756,9 +756,10 @@ function! s:run_debug_console() abort
     throw 'Console is either not executable or empty, did you install it correctly?'
   endif
   let l:addrfile = s:temp.'/console-addr'
+  call delete(l:addrfile)
   let l:command = './bin/console -addrfile '.l:addrfile.' -log '.s:temp.'/console-log'
   call s:tmux_send_keys(s:console_pane, ['"clear; (cd '.s:plugin_home.' && '.l:command.')"', 'Enter'])
-  let s:debug_console_socket = 0
+  let s:debug_console_socket = -1
   call s:wait_for_file(l:addrfile)
   let s:debug_console_socket = dap#io#sockconnect(readfile(l:addrfile)[0], function('s:handle_debug_console_stdout'))
 endfunction
@@ -833,9 +834,9 @@ function! s:send_to_console(data) abort
 endfunction
 
 function! s:quit_console() abort
-  if !s:is_zero(s:debug_console_socket)
+  if s:is_open_socket_or_job(s:debug_console_socket)
     call dap#io#sockclose(s:debug_console_socket)
-    let s:debug_console_socket = 0
+    let s:debug_console_socket = -1
   endif
 endfunction
 
@@ -848,8 +849,17 @@ function! s:tmux_reset(pane) abort
   call system('tmux send-keys -t '.a:pane.' clear Enter')
 endfunction
 
-function! s:is_zero(value)
-  return type(a:value) == v:t_number && a:value == 0
+function! s:is_open_socket_or_job(value)
+  if type(a:value) == v:t_number
+    return a:value > 0
+  endif
+  if has('channel') && type(a:value) == v:t_channel
+    return v:true
+  endif
+  if has('job') && type(a:value) == v:t_job
+    return v:true
+  endif
+  return v:false
 endfunction
 
 " Neovim invokes callbacks with lists of strings, and Vim invokes them
