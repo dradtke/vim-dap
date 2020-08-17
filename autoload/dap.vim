@@ -352,7 +352,18 @@ function! s:handle_response(data) abort
       call dap#log_error('Initialization failed')
       call s:reset()
     elseif l:command == 'evaluate'
-      call dap#write_result(a:data['message'])
+      if has_key(a:data, 'body') && has_key(a:data['body'], 'error')
+        let l:error = a:data['body']['error']
+        let g:last_error = l:error
+        call dap#log('Evaluation failed: '.json_encode(l:error))
+        " TODO: respect showUser?
+        let l:format = l:error['format']
+        let l:variables = get(l:error, 'variables', {})
+        call dap#write_result(dap#util#format_string(l:format, l:variables))
+      else
+        call dap#log_error('Evaluation failed: '.a:data['message'])
+        call dap#write_result(a:data['message'])
+    endif
     elseif l:command == 'completions'
       call dap#write_completion(a:data['message'])
     else
@@ -820,6 +831,7 @@ function! s:console_command(command) abort
 endfunction
 
 function! dap#write_result(data) abort
+  call dap#log('Evaluation result: '.a:data)
   call s:send_to_console('!'.a:data)
 endfunction
 

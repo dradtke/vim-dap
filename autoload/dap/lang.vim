@@ -4,6 +4,8 @@ function! dap#lang#run(buffer, run_args) abort
     call dap#lang#java#run(a:buffer)
   elseif l:filetype == 'go'
     call dap#lang#go#run(a:buffer)
+  else
+    throw 'vim-dap: unsupported filetype: '.l:filetype
   endif
 endfunction
 
@@ -17,6 +19,8 @@ function! dap#lang#initialized(buffer, run_args) abort
     call dap#lang#java#launch(a:buffer, a:run_args)
   elseif l:filetype == 'go'
     call dap#lang#go#launch(a:buffer, a:run_args)
+  else
+    throw 'vim-dap: unsupported filetype: '.l:filetype
   endif
 endfunction
 
