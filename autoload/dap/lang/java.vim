@@ -77,19 +77,19 @@ function! dap#lang#java#launch(buffer, run_args) abort
 
       let l:args = join(a:run_args, ' ')
 
-      let l:misc = s:plugin_home.'/misc'
-      call add(l:classpaths, l:misc)
-      if s:test_runner_main_class == s:custom_junit_runner && !filereadable(l:misc.'/'.s:custom_junit_runner.'.class')
-        let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.s:custom_junit_runner.'.java"')
-        if v:shell_error
-          throw 'Failed to compile single test runner: '.l:output
-        endif
-      endif
-
       " If this is a test file, execute JUnit and pass the class in as an
       " argument.
       " TODO: shellescape args?
       if l:is_test
+        let l:misc = s:plugin_home.'/misc'
+        call add(l:classpaths, l:misc)
+        if s:test_runner_main_class == s:custom_junit_runner && !filereadable(l:misc.'/'.s:custom_junit_runner.'.class')
+          let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.s:custom_junit_runner.'.java"')
+          if v:shell_error
+            throw 'Failed to compile single test runner: '.l:output
+          endif
+        endif
+
         " TODO: use s:test_runner_args_builder again
         if len(a:run_args) == 0
           let l:args = dap#lang#java#full_class_name(a:buffer)
@@ -194,3 +194,5 @@ function! dap#lang#java#test_name() abort
     endif
   endwhile
 endfunction
+
+" vim: set expandtab shiftwidth=2 tabstop=2:
