@@ -23,8 +23,10 @@ func main() {
 	log.SetFlags(log.Ltime | log.Lshortfile)
 
 	var (
-		addrfile = flag.String("addrfile", "", "file to write connection information to")
-		logfile  = flag.String("log", "", "path to log file")
+		addrFile    = flag.String("addrfile", "", "file to write connection information to")
+		logFile     = flag.String("log", "", "path to log file")
+		historyFile = flag.String("history", "", "path to history file")
+		vimMode     = flag.Bool("vim", false, "enable vim mode")
 	)
 	flag.Parse()
 
@@ -34,12 +36,12 @@ func main() {
 		}
 	}()
 
-	if *addrfile == "" {
+	if *addrFile == "" {
 		panic("-addrfile not specified")
 	}
 
-	if *logfile != "" {
-		if f, err := os.Create(*logfile); err != nil {
+	if *logFile != "" {
+		if f, err := os.Create(*logFile); err != nil {
 			panic(err)
 		} else {
 			log.SetOutput(f)
@@ -61,17 +63,21 @@ func main() {
 	}
 	defer listener.Close()
 
-	if err := ioutil.WriteFile(*addrfile, []byte(listener.Addr().String()), 0644); err != nil {
+	if err := ioutil.WriteFile(*addrFile, []byte(listener.Addr().String()), 0644); err != nil {
 		panic("failed to write addrfile: " + err.Error())
 	}
-	defer os.Remove(*addrfile)
+	defer os.Remove(*addrFile)
 
 	conn, err := listener.Accept()
 	if err != nil {
 		panic("failed to accept connection: " + err.Error())
 	}
 
-	dc := newDebugConsole(conn)
+	dc := newDebugConsole(conn, &readline.Config{
+		Prompt:      "Debug Console> ",
+		HistoryFile: *historyFile,
+		VimMode:     *vimMode,
+	})
 	go dc.processInput()
 
 	for {
@@ -100,10 +106,10 @@ type debugConsole struct {
 	results, completions, ready chan string
 }
 
-func newDebugConsole(conn net.Conn) *debugConsole {
+func newDebugConsole(conn net.Conn, config *readline.Config) *debugConsole {
 	dc := &debugConsole{
 		conn:        conn,
-		shell:       ishell.NewWithConfig(&readline.Config{Prompt: "Debug Console> "}),
+		shell:       ishell.NewWithConfig(config),
 		results:     make(chan string, 1),
 		completions: make(chan string, 1),
 		ready:       make(chan string),
@@ -192,16 +198,8 @@ func (dc debugConsole) Do(line []rune, pos int) ([][]rune, int) {
 	start := string(line[:pos])
 	firstSpace := strings.Index(start, " ")
 
-	// autocomplete commands if there's only one word so far
 	if firstSpace == -1 {
-		var newLine [][]rune
-		for _, cmd := range dc.shell.Cmds() {
-			if strings.HasPrefix(cmd.Name, start) {
-				completion := cmd.Name[pos:] + " "
-				newLine = append(newLine, []rune(completion))
-			}
-		}
-		return newLine, pos
+		return dc.cmdEvalCompleter(line, pos)
 	}
 
 	command := start[:firstSpace]

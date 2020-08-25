@@ -767,8 +767,10 @@ function! s:run_debug_console() abort
     throw 'Console is either not executable or empty, did you install it correctly?'
   endif
   let l:addrfile = s:temp.'/console-addr'
+  let l:logfile = s:temp.'/console-log'
+  let l:historyfile = s:temp.'/console-history'
   call delete(l:addrfile)
-  let l:command = './bin/console -addrfile '.l:addrfile.' -log '.s:temp.'/console-log'
+  let l:command = './bin/console -addrfile '.l:addrfile.' -log '.l:logfile.' -history '.l:historyfile
   call s:tmux_send_keys(s:console_pane, ['"clear; (cd '.s:plugin_home.' && '.l:command.')"', 'Enter'])
   let s:debug_console_socket = -1
   call s:wait_for_file(l:addrfile)
