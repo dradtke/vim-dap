@@ -16,14 +16,16 @@ will detail existing language support and their requirements.
 
 ### Java
 
-Java requires you to be running the [eclipse.jdt.ls](https://github.com/eclipse/eclipse.jdt.ls)
-language server with [java-debug](https://github.com/microsoft/java-debug) installed.
-The `dap#run()` method requires you to be using `LanguageClient-neovim` as your client,
-but `dap#connect()` can be called manually to connect to the debug adapter if it's already
-running.
+Java requires you to be running the
+[eclipse.jdt.ls](https://github.com/eclipse/eclipse.jdt.ls) language server
+with [java-debug](https://github.com/microsoft/java-debug) installed.  The
+`dap#run()` method requires you to be using either `vim-lsp` or
+`LanguageClient-neovim` as your client, but `dap#connect()` can be called
+manually to connect to the debug adapter if it's already running.
 
-In order to run the language server with debug support, you will need to add something
-like this to your `settings.json` file:
+In order to run the language server with debug support, you will need to
+initialize the server with the path of the debug jar bundle. An example using
+`settings.json`:
 
 ```json
 {
@@ -52,3 +54,5 @@ First, make sure that you have Delve installed and that `dlv` is available on yo
 Second, the debug adapter for Go is implemented as part of `vscode-go`, so your
 system must have Node available in order for it to run (womp womp). It will be
 automatically downloaded on first use.
+
+<!-- vim: set textwidth=80: -->

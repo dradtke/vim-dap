@@ -36,6 +36,7 @@ function! dap#lang#java#run(buffer) abort
     function! s:start_callback(data) closure
       if has_key(a:data, 'result')
         let l:port = a:data['result']
+        echomsg 'Connecting to debug adapter on port '.l:port
         call dap#connect(l:port)
       elseif has_key(a:data, 'error')
         echoerr 'Failed to start debug session, is the language server running? Error message to follow:'
