@@ -17,11 +17,12 @@ will detail existing language support and their requirements.
 ### Java
 
 Java requires you to be running the
-[eclipse.jdt.ls](https://github.com/eclipse/eclipse.jdt.ls) language server
-with [java-debug](https://github.com/microsoft/java-debug) installed.  The
-`dap#run()` method requires you to be using either `vim-lsp` or
-`LanguageClient-neovim` as your client, but `dap#connect()` can be called
-manually to connect to the debug adapter if it's already running.
+[eclipse.jdt.ls](https://github.com/eclipse/eclipse.jdt.ls) language server with
+[java-debug](https://github.com/microsoft/java-debug) installed.  The
+`dap#run()` method requires you to be using either Neovim with native LSP
+support, `vim-lsp` or `LanguageClient-neovim` as your client, but
+`dap#connect()` can be called manually to connect to the debug adapter if it's
+already running.
 
 In order to run the language server with debug support, you will need to
 initialize the server with the path of the debug jar bundle. An example using

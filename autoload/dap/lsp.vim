@@ -1,10 +1,22 @@
 function! dap#lsp#execute_command(command, args, callback) abort
-  if s:has_languageclient_neovim()
+  if s:has_neovim_lsp()
+    let s:last_callback = a:callback
+    call luaeval('require"dap".execute_command(_A[1], _A[2])', [a:command, a:args])
+  elseif s:has_languageclient_neovim()
     call LanguageClient#workspace_executeCommand(a:command, a:args, a:callback)
   elseif s:has_vim_lsp()
     call s:vim_lsp_execute_command(a:command, a:args, a:callback)
   else
     echoerr 'No supported language client installed!'
+  endif
+endfunction
+
+function! dap#lsp#execute_command_callback(result) abort
+  if !exists('s:last_callback')
+    echoerr 'Expected s:last_callback to be defined, but it was not'
+  else
+    call s:last_callback(a:result)
+    unlet s:last_callback
   endif
 endfunction
 
@@ -32,6 +44,10 @@ function! s:vim_lsp_handle_execute_command_response(data, callback) abort
   else
     call call(a:callback, [l:response])
   endif
+endfunction
+
+function! s:has_neovim_lsp()
+  return has('nvim-0.5')
 endfunction
 
 function! s:has_languageclient_neovim()
