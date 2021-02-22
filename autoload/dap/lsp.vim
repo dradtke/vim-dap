@@ -16,7 +16,7 @@ function! dap#lsp#execute_command_callback(result) abort
     echoerr 'Expected s:last_callback to be defined, but it was not'
   else
     call s:last_callback(a:result)
-    unlet s:last_callback
+    " unlet s:last_callback
   endif
 endfunction
 
