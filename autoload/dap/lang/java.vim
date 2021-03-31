@@ -28,6 +28,35 @@ function! dap#lang#java#set_test_runner_args_builder(f)
   let s:test_runner_args_builder = a:f
 endfunction
 
+" Update Java debug settings.
+" For available values, see: https://github.com/microsoft/java-debug/blob/master/com.microsoft.java.debug.core/src/main/java/com/microsoft/java/debug/core/DebugSettings.java
+function! dap#lang#java#update_settings(...) abort
+  function! s:settings_updated_callback(data) closure
+    if has_key(a:data, 'result')
+      echomsg 'Debug settings updated'
+      call dap#log('Debug settings updated')
+      call dap#log(a:data['result'])
+    elseif has_key(a:data, 'error')
+      call dap#log_warning('Failed to update settings, error message to follow:')
+      call dap#log_warning(a:data['error']['message'])
+    else
+      call dap#log_error('Call to vscode.java.updateDebugSettings returned unexpected response.')
+    endif
+  endfunction
+
+  let l:settings = []
+  for l:arg in a:000
+    call add(l:settings, json_encode(l:arg))
+  endfor
+  call dap#lsp#execute_command('vscode.java.updateDebugSettings', l:settings, function('s:settings_updated_callback'))
+endfunction
+
+" Convenience method for updating the javaHome setting, which is used to
+" launch the JVM.
+function! dap#lang#java#set_java_home(home) abort
+  call dap#lang#java#update_settings({'javaHome': a:home})
+endfunction
+
 function! dap#lang#java#run(buffer) abort
   if dap#is_connected()
     " Java at least requires us to start a new debug adapter for each session.
@@ -39,10 +68,10 @@ function! dap#lang#java#run(buffer) abort
         echomsg 'Connecting to debug adapter on port '.l:port
         call dap#connect(l:port)
       elseif has_key(a:data, 'error')
-        echoerr 'Failed to start debug session, is the language server running? Error message to follow:'
-        echoerr a:data['error']['message']
+        call dap#log_error('Failed to start debug session, is the language server running? Error message to follow:')
+        call dap#log_error(a:data['error']['message'])
       else
-        echoerr 'Call to vscode.java.startDebugSession returned unexpected response.'
+        call dap#log_error('Call to vscode.java.startDebugSession returned unexpected response.')
       endif
     endfunction
 
@@ -59,14 +88,14 @@ function! dap#lang#java#launch(buffer, run_args) abort
 
   function! s:is_test_callback(data) closure
     if has_key(a:data, 'error')
-      echoerr 'Error calling java.project.isTestFile: '.a:data['error']['message']
+      call dap#log_error('Error calling java.project.isTestFile: '.a:data['error']['message'])
       return
     endif
     let l:is_test = a:data['result']
 
     function! s:get_classpaths_callback(data) closure
       if has_key(a:data, 'error')
-        echoerr 'Error calling java.project.getClasspaths: '.a:data['error']['message']
+        call dap#log_error('Error calling java.project.getClasspaths: '.a:data['error']['message'])
         return
       endif
       let g:is_test = l:is_test

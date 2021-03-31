@@ -66,7 +66,7 @@ endfunction
 function! dap#restart(buffer) abort
   echomsg 'Restarting debugger'
   if get(s:capabilities, 'supportsRestartRequest', v:false)
-    echoerr 'Fancy restart requested, but not implemented yet.'
+    call dap#log_error('Fancy restart requested, but not implemented yet.')
   else
     let s:restarting = a:buffer
     call dap#disconnect(v:true)  " TODO: ensure that this restarts the debuggee
@@ -130,7 +130,7 @@ endfunction
 " org.junit.runner.JUnitCore along with an array of classpaths.
 function! dap#launch(arguments) abort
   if !s:is_open_socket_or_job(s:debug_adapter_job)
-    echoerr 'No debug session running.'
+    call dap#log_error('No debug session running.')
     return
   endif
   call dap#send_message(dap#build_request('launch', a:arguments))
@@ -148,7 +148,7 @@ endfunction
 
 function! dap#continue_stopped() abort
   if s:stopped_thread == -1
-    echoerr 'No stopped thread.'
+    call dap#log_error('No stopped thread.')
     return
   endif
   call dap#continue(s:stopped_thread)
@@ -163,7 +163,7 @@ endfunction
 
 function! dap#next_stopped() abort
   if s:stopped_thread == -1
-    echoerr 'No stopped thread.'
+    call dap#log_error('No stopped thread.')
     return
   endif
   call dap#next(s:stopped_thread)
@@ -177,7 +177,7 @@ endfunction
 
 function! dap#step_in_stopped() abort
   if s:stopped_thread == -1
-    echoerr 'No stopped thread.'
+    call dap#log_error('No stopped thread.')
     return
   endif
   call dap#step_in(s:stopped_thread)
@@ -190,7 +190,7 @@ endfunction
 
 function! dap#step_out_stopped() abort
   if s:stopped_thread == -1
-    echoerr 'No stopped thread.'
+    call dap#log_error('No stopped thread.')
     return
   endif
   call dap#step_out(s:stopped_thread)
@@ -261,12 +261,18 @@ function! dap#log(msg) abort
   elseif type(a:msg) == v:t_string
     call writefile([a:msg], l:logfile, 'a')
   else
-    echoerr 'dap#log: unexpected message type: '.type(a:msg)
+    call dap#log_error('dap#log: unexpected message type: '.type(a:msg))
   endif
 endfunction
 
+function! dap#log_warning(msg) abort
+  call dap#log('[WARN] '.a:msg)
+  echohl WarningMsg | echomsg a:msg | echohl None
+endfunction
+
 function! dap#log_error(msg) abort
-  echoerr a:msg
+  call dap#log('[ERROR] '.a:msg)
+  echohl ErrorMsg | echomsg a:msg | echohl None
 endfunction
 
 function! s:reset()
@@ -529,7 +535,7 @@ endfunction
 function! s:handle_event_stopped_stacktrace(data) abort
   let l:stackframes = a:data['body']['stackFrames']
   if empty(l:stackframes)
-    echoerr 'Cannot jump to stopped location, stack trace is empty.'
+    call dap#log_warning('Cannot jump to stopped location, stack trace is empty.')
     return
   endif
 
@@ -550,7 +556,7 @@ function! s:handle_event_breakpoint(body) abort
   elseif l:reason == 'removed'
   elseif l:reason == 'changed'
   else
-    echoerr 'unknown breakpoint reason: '.l:reason
+    call dap#log_error('Unknown breakpoint reason: '.l:reason)
   endif
 endfunction
 
