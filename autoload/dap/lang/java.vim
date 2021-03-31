@@ -28,33 +28,55 @@ function! dap#lang#java#set_test_runner_args_builder(f)
   let s:test_runner_args_builder = a:f
 endfunction
 
-" Update Java debug settings.
-" For available values, see: https://github.com/microsoft/java-debug/blob/master/com.microsoft.java.debug.core/src/main/java/com/microsoft/java/debug/core/DebugSettings.java
-function! dap#lang#java#update_settings(...) abort
-  function! s:settings_updated_callback(data) closure
+function! s:load_debug_settings(next) abort
+  for l:path in ['.vim/launch.json', '.vscode/launch.json']
+    if filereadable(l:path)
+      function! s:settings_updated_callback(data) closure
+        if has_key(a:data, 'result')
+          call dap#log('Debug settings updated')
+          call dap#log(a:data['result'])
+        elseif has_key(a:data, 'error')
+          call dap#log_warning('Failed to update settings, error message to follow:')
+          call dap#log_warning(a:data['error']['message'])
+        else
+          call dap#log_error('Call to vscode.java.updateDebugSettings returned unexpected response.')
+        endif
+        call a:next()
+      endfunction
+
+      call dap#log('Loading debug settings from '.l:path)
+      let l:settings = json_decode(join(readfile(l:path), ''))
+      " For some reason, a NullPointerException often gets thrown if logLevel
+      " is not defined explicitly, so default it to warn if not defined
+      if !has_key(l:settings, 'logLevel')
+        let l:settings['logLevel'] = 'warn'
+      endif
+      call dap#lsp#execute_command('vscode.java.updateDebugSettings', [json_encode(l:settings)], function('s:settings_updated_callback'))
+      return
+    endif
+  endfor
+  call a:next()
+endfunction
+
+function! s:start_debug_adapter(buffer) abort
+  function! s:cb(data) closure
     if has_key(a:data, 'result')
-      echomsg 'Debug settings updated'
-      call dap#log('Debug settings updated')
-      call dap#log(a:data['result'])
+      let l:port = a:data['result']
+      echomsg 'Connecting to debug adapter on port '.l:port
+      call dap#connect(l:port)
     elseif has_key(a:data, 'error')
-      call dap#log_warning('Failed to update settings, error message to follow:')
-      call dap#log_warning(a:data['error']['message'])
+      call dap#log_error('Failed to start debug session, is the language server running? Error message to follow:')
+      call dap#log_error(a:data['error']['message'])
     else
-      call dap#log_error('Call to vscode.java.updateDebugSettings returned unexpected response.')
+      call dap#log_error('Call to vscode.java.startDebugSession returned unexpected response.')
     endif
   endfunction
 
-  let l:settings = []
-  for l:arg in a:000
-    call add(l:settings, json_encode(l:arg))
-  endfor
-  call dap#lsp#execute_command('vscode.java.updateDebugSettings', l:settings, function('s:settings_updated_callback'))
-endfunction
-
-" Convenience method for updating the javaHome setting, which is used to
-" launch the JVM.
-function! dap#lang#java#set_java_home(home) abort
-  call dap#lang#java#update_settings({'javaHome': a:home})
+  if &filetype != 'java'
+    let s:current_buffer = bufnr('%')
+    execute 'hide buffer '.a:buffer
+  endif
+  call dap#lsp#execute_command('vscode.java.startDebugSession', [], function('s:cb'))
 endfunction
 
 function! dap#lang#java#run(buffer) abort
@@ -62,24 +84,10 @@ function! dap#lang#java#run(buffer) abort
     " Java at least requires us to start a new debug adapter for each session.
     call dap#restart(a:buffer)
   else
-    function! s:start_callback(data) closure
-      if has_key(a:data, 'result')
-        let l:port = a:data['result']
-        echomsg 'Connecting to debug adapter on port '.l:port
-        call dap#connect(l:port)
-      elseif has_key(a:data, 'error')
-        call dap#log_error('Failed to start debug session, is the language server running? Error message to follow:')
-        call dap#log_error(a:data['error']['message'])
-      else
-        call dap#log_error('Call to vscode.java.startDebugSession returned unexpected response.')
-      endif
+    function! s:run_cb1() closure
+      call s:start_debug_adapter(a:buffer)
     endfunction
-
-    if &filetype != 'java'
-      let s:current_buffer = bufnr('%')
-      execute 'hide buffer '.a:buffer
-    endif
-    call dap#lsp#execute_command('vscode.java.startDebugSession', [], function('s:start_callback'))
+    call s:load_debug_settings(function('s:run_cb1'))
   endif
 endfunction
 

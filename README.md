@@ -36,6 +36,19 @@ initialize the server with the path of the debug jar bundle. An example using
 }
 ```
 
+#### Debugger Settings
+
+The [debug
+settings](https://github.com/microsoft/java-debug/blob/master/com.microsoft.java.debug.core/src/main/java/com/microsoft/java/debug/core/DebugSettings.java)
+can be customized by defining either a `.vim/launch.json` or
+`.vscode/launch.json` file, i.e.
+
+```json
+{
+  "javaHome": "/usr/lib/jvm/java-8-openjdk-amd64"
+}
+```
+
 #### Tips
 
 To make it easier to run Java tests, I recommend adding something like this to your `.vimrc`.
