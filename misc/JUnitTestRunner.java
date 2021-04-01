@@ -1,3 +1,5 @@
+import java.time.Duration;
+import java.time.Instant;
 import org.junit.Ignore;
 import org.junit.runner.Description;
 import org.junit.runner.JUnitCore;
@@ -19,7 +21,10 @@ public class JUnitTestRunner {
   }
 
   static class Listener extends RunListener {
+    private Instant startTime;
+
     public void testRunStarted(Description description) {
+      startTime = Instant.now();
       final String className = description.getTestClass().getSimpleName();
       if (description.testCount() == 1) {
         System.out.println("==== Running 1 test in " + className + "... ====");
@@ -41,6 +46,7 @@ public class JUnitTestRunner {
     }
 
     public void testRunFinished(Result result) {
+      final Duration elapsed = Duration.between(startTime, Instant.now());
       System.out.println();
       for (Failure failure : result.getFailures()) {
         System.out.println(name(failure.getDescription()) + ": " + failure.getTrace());
@@ -48,7 +54,25 @@ public class JUnitTestRunner {
       }
       String testOrTests = result.getRunCount() == 1 ? "test" : "tests";
       String failureOrFailures = result.getFailureCount() == 1 ? "failure" : "failures";
-      System.out.println("==== " + result.getRunCount() + " " + testOrTests + " run, " + result.getFailureCount() + " " + failureOrFailures + " ====");
+      System.out.println("==== " + result.getRunCount() + " " + testOrTests + " run, " + result.getFailureCount() + " " + failureOrFailures + " in " + getReadableDuration(elapsed) + " ====");
+    }
+
+    private String getReadableDuration(Duration duration) {
+      StringBuilder builder = new StringBuilder();
+      if (duration.toHours() > 0) {
+        builder.append(duration.toHours());
+        builder.append(" hour" + (duration.toHours() > 1 ? "s" : "") + ", ");
+        duration = duration.minusHours(duration.toHours());
+      }
+      if (duration.toMinutes() > 0) {
+        builder.append(duration.toMinutes());
+        builder.append(" minute" + (duration.toMinutes() > 1 ? "s" : "") + ", ");
+        duration = duration.minusMinutes(duration.toMinutes());
+      }
+      builder.append(duration.getSeconds());
+      builder.append(" second" + (duration.getSeconds() > 1 ? "s" : ""));
+      duration = duration.minusSeconds(duration.getSeconds());
+      return builder.toString();
     }
 
     private String name(Description description) {
