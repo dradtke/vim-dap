@@ -1,11 +1,19 @@
-function! dap#lsp#execute_command(command, args, callback) abort
+function! dap#lsp#execute_command(buffer, command, args, callback) abort
   if s:has_neovim_lsp()
     let s:last_callback = a:callback
-    call luaeval('require"dap".execute_command(_A[1], _A[2])', [a:command, a:args])
-  elseif s:has_languageclient_neovim()
-    call LanguageClient#workspace_executeCommand(a:command, a:args, a:callback)
+    call luaeval('require"dap".execute_command(_A[1], _A[2], _A[3])', [a:buffer, a:command, a:args])
+    return
+  endif
+  " Other clients don't support providing the buffer as part of
+  " executeCommand, so we need to switch to it and then switch back.
+  " Ideally, these would be able to execute commands on an arbitrary buffer,
+  " and not just for the current one.
+  let l:current_buffer = bufnr('%')
+  execute 'hide buffer '.a:buffer
+  if s:has_languageclient_neovim()
+    call LanguageClient#workspace_executeCommand(a:command, a:args, {data->s:switch_buffer_and_callback(l:current_buffer, a:callback, data)})
   elseif s:has_vim_lsp()
-    call s:vim_lsp_execute_command(a:command, a:args, a:callback)
+    call s:vim_lsp_execute_command(a:command, a:args, {data->s:switch_buffer_and_callback(l:current_buffer, a:callback, data)})
   else
     echoerr 'No supported language client installed!'
   endif
@@ -18,6 +26,11 @@ function! dap#lsp#execute_command_callback(result) abort
     call s:last_callback(a:result)
     " unlet s:last_callback
   endif
+endfunction
+
+function! s:switch_buffer_and_callback(buffer, callback, data) abort
+  execute 'hide buffer '.a:buffer
+  call a:callback(a:data)
 endfunction
 
 function! s:vim_lsp_execute_command(command, args, callback) abort

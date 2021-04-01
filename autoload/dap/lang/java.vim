@@ -28,7 +28,7 @@ function! dap#lang#java#set_test_runner_args_builder(f)
   let s:test_runner_args_builder = a:f
 endfunction
 
-function! s:load_debug_settings(next) abort
+function! s:load_debug_settings(buffer, next) abort
   for l:path in ['.vim/launch.json', '.vscode/launch.json']
     if filereadable(l:path)
       function! s:settings_updated_callback(data) closure
@@ -51,7 +51,7 @@ function! s:load_debug_settings(next) abort
       if !has_key(l:settings, 'logLevel')
         let l:settings['logLevel'] = 'warn'
       endif
-      call dap#lsp#execute_command('vscode.java.updateDebugSettings', [json_encode(l:settings)], function('s:settings_updated_callback'))
+      call dap#lsp#execute_command(a:buffer, 'vscode.java.updateDebugSettings', [json_encode(l:settings)], function('s:settings_updated_callback'))
       return
     endif
   endfor
@@ -72,11 +72,7 @@ function! s:start_debug_adapter(buffer) abort
     endif
   endfunction
 
-  if &filetype != 'java'
-    let s:current_buffer = bufnr('%')
-    execute 'hide buffer '.a:buffer
-  endif
-  call dap#lsp#execute_command('vscode.java.startDebugSession', [], function('s:cb'))
+  call dap#lsp#execute_command(a:buffer, 'vscode.java.startDebugSession', [], function('s:cb'))
 endfunction
 
 function! dap#lang#java#run(buffer) abort
@@ -87,7 +83,7 @@ function! dap#lang#java#run(buffer) abort
     function! s:run_cb1() closure
       call s:start_debug_adapter(a:buffer)
     endfunction
-    call s:load_debug_settings(function('s:run_cb1'))
+    call s:load_debug_settings(a:buffer, function('s:run_cb1'))
   endif
 endfunction
 
@@ -106,8 +102,6 @@ function! dap#lang#java#launch(buffer, run_args) abort
         call dap#log_error('Error calling java.project.getClasspaths: '.a:data['error']['message'])
         return
       endif
-      let g:is_test = l:is_test
-      let g:result = a:data
       let l:project_root = dap#util#uri_to_path(a:data['result']['projectRoot'])
       let l:project_name = fnamemodify(l:project_root, ':t')
       let l:classpaths = a:data['result']['classpaths']
@@ -152,18 +146,13 @@ function! dap#lang#java#launch(buffer, run_args) abort
               \ 'shortenCommandLine': 'jarmanifest',
               \ })
       endif
-
-      if s:current_buffer != v:null
-        execute 'hide buffer '.s:current_buffer
-        let s:current_buffer = v:null
-      endif
     endfunction
 
     let l:scope = (l:is_test ? 'test' : 'runtime')
-    call dap#lsp#execute_command('java.project.getClasspaths', [l:path, json_encode({'scope': l:scope})], function('s:get_classpaths_callback'))
+    call dap#lsp#execute_command(a:buffer, 'java.project.getClasspaths', [l:path, json_encode({'scope': l:scope})], function('s:get_classpaths_callback'))
   endfunction
 
-  call dap#lsp#execute_command('java.project.isTestFile', [l:path], function('s:is_test_callback'))
+  call dap#lsp#execute_command(a:buffer, 'java.project.isTestFile', [l:path], function('s:is_test_callback'))
 endfunction
 
 function! s:find_line(buffer, pat) abort
