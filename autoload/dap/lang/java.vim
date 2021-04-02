@@ -115,7 +115,7 @@ function! dap#lang#java#launch(buffer, run_args) abort
         call add(l:classpaths, l:misc)
         let l:test_runner = s:test_runner_main_class
         if l:test_runner == v:null
-          let l:test_runner = s:get_test_runner()
+          let l:test_runner = s:get_test_runner(a:buffer)
           if !filereadable(l:misc.'/'.l:test_runner.'.class')
             call dap#log('Classpaths: '.join(l:classpaths, ':'))
             let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.l:test_runner.'.java"')
@@ -225,14 +225,15 @@ function! dap#lang#java#test_name() abort
   endwhile
 endfunction
 
-function! s:get_test_runner() abort
-  if search('import org.junit.jupiter.api.Test', 'nw') > 0
-    echoerr 'JUnit 5 is not supported (yet)'
-  elseif search('import org.junit.Test', 'nw') > 0
-    return 'JUnit4TestRunner'
-  else
-    echoerr 'No recognized Test imports found'
-  endif
+function! s:get_test_runner(buffer) abort
+  for l:line in getbufline(a:buffer, 1, '$')
+    if stridx(l:line, 'import org.junit.jupiter.api.Test') > -1
+      echoerr 'JUnit 5 is not supported (yet)'
+    elseif stridx(l:line, 'import org.junit.Test') > -1
+      return 'JUnit4TestRunner'
+    endif
+  endfor
+  echoerr 'No recognized Test imports found'
 endfunction
 
 " vim: set expandtab shiftwidth=2 tabstop=2:
