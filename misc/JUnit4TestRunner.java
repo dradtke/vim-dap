@@ -49,12 +49,31 @@ public class JUnit4TestRunner {
       final Duration elapsed = Duration.between(startTime, Instant.now());
       System.out.println();
       for (Failure failure : result.getFailures()) {
-        System.out.println(name(failure.getDescription()) + ": " + failure.getTrace());
+        System.out.println("!!! " + name(failure.getDescription()));
+        for (StackTraceElement el : failure.getException().getStackTrace()) {
+          if (showStackTraceElement(el)) {
+            System.out.println("\t" + el.toString());
+          }
+        }
         System.out.println();
       }
       String testOrTests = result.getRunCount() == 1 ? "test" : "tests";
       String failureOrFailures = result.getFailureCount() == 1 ? "failure" : "failures";
       System.out.println("==== " + result.getRunCount() + " " + testOrTests + " run, " + result.getFailureCount() + " " + failureOrFailures + " in " + getReadableDuration(elapsed) + " ====");
+    }
+
+    private boolean showStackTraceElement(StackTraceElement el) {
+      if (el.isNativeMethod()) {
+        return false;
+      }
+      String className = el.getClassName();
+      if (className.startsWith("org.junit.") || className.startsWith("sun.reflect.") || className.startsWith("java.lang.reflect.")) {
+        return false;
+      }
+      if (className.equals("JUnit4TestRunner")) {
+        return false;
+      }
+      return true;
     }
 
     private String getReadableDuration(Duration duration) {
