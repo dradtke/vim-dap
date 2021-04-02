@@ -80,16 +80,16 @@ public class JUnit4TestRunner {
       StringBuilder builder = new StringBuilder();
       if (duration.toHours() > 0) {
         builder.append(duration.toHours());
-        builder.append(" hour" + (duration.toHours() > 1 ? "s" : "") + ", ");
+        builder.append(" hour" + (duration.toHours() != 1 ? "s" : "") + ", ");
         duration = duration.minusHours(duration.toHours());
       }
       if (duration.toMinutes() > 0) {
         builder.append(duration.toMinutes());
-        builder.append(" minute" + (duration.toMinutes() > 1 ? "s" : "") + ", ");
+        builder.append(" minute" + (duration.toMinutes() != 1 ? "s" : "") + ", ");
         duration = duration.minusMinutes(duration.toMinutes());
       }
       builder.append(duration.getSeconds());
-      builder.append(" second" + (duration.getSeconds() > 1 ? "s" : ""));
+      builder.append(" second" + (duration.getSeconds() != 1 ? "s" : ""));
       duration = duration.minusSeconds(duration.getSeconds());
       return builder.toString();
     }
