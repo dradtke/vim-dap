@@ -8,7 +8,7 @@ import org.junit.runner.Result;
 import org.junit.runner.notification.RunListener;
 import org.junit.runner.notification.Failure;
 
-public class JUnitTestRunner {
+public class JUnit4TestRunner {
   public static void main(String... args) throws ClassNotFoundException {
     String[] classAndMethod = args[0].split("#");
     Request request = classAndMethod.length > 1

@@ -1,9 +1,7 @@
 let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h:h:h')
 let s:current_buffer = v:null
 
-" let s:test_runner_main_class = 'org.junit.runner.JUnitCore'
-let s:custom_junit_runner = 'JUnitTestRunner'
-let s:test_runner_main_class = s:custom_junit_runner
+let s:test_runner_main_class = v:null
 let s:test_runner_args_builder = {mainclass -> mainclass}
 
 function! dap#lang#java#run_test_class() abort
@@ -115,10 +113,15 @@ function! dap#lang#java#launch(buffer, run_args) abort
       if l:is_test
         let l:misc = s:plugin_home.'/misc'
         call add(l:classpaths, l:misc)
-        if s:test_runner_main_class == s:custom_junit_runner && !filereadable(l:misc.'/'.s:custom_junit_runner.'.class')
-          let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.s:custom_junit_runner.'.java"')
-          if v:shell_error
-            throw 'Failed to compile single test runner: '.l:output
+        let l:test_runner = s:test_runner_main_class
+        if l:test_runner == v:null
+          let l:test_runner = s:get_test_runner()
+          if !filereadable(l:misc.'/'.l:test_runner.'.class')
+            call dap#log('Classpaths: '.join(l:classpaths, ':'))
+            let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.l:test_runner.'.java"')
+            if v:shell_error
+              throw 'Failed to compile single test runner: '.l:output
+            endif
           endif
         endif
 
@@ -127,7 +130,7 @@ function! dap#lang#java#launch(buffer, run_args) abort
           let l:args = dap#lang#java#full_class_name(a:buffer)
         endif
         call dap#launch({
-              \ 'mainClass': s:test_runner_main_class,
+              \ 'mainClass': l:test_runner,
               \ 'args': l:args,
               \ 'classPaths': l:classpaths,
               \ 'modulePaths': l:modulepaths,
@@ -220,6 +223,16 @@ function! dap#lang#java#test_name() abort
       return l:test_name
     endif
   endwhile
+endfunction
+
+function! s:get_test_runner() abort
+  if search('import org.junit.jupiter.api.Test', 'nw') > 0
+    echoerr 'JUnit 5 is not supported (yet)'
+  elseif search('import org.junit.Test', 'nw') > 0
+    return 'JUnit4TestRunner'
+  else
+    echoerr 'No recognized Test imports found'
+  endif
 endfunction
 
 " vim: set expandtab shiftwidth=2 tabstop=2:
