@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/abiosoft/readline"
@@ -23,10 +24,11 @@ func main() {
 	log.SetFlags(log.Ltime | log.Lshortfile)
 
 	var (
-		addrFile    = flag.String("addrfile", "", "file to write connection information to")
-		logFile     = flag.String("log", "", "path to log file")
-		historyFile = flag.String("history", "", "path to history file")
-		vimMode     = flag.Bool("vim", false, "enable vim mode")
+		clientAddrFile = flag.String("clientaddrfile", "", "file to write client connection information to")
+		progPortFile   = flag.String("progportfile", "", "file to write program connection information to")
+		logFile        = flag.String("log", "", "path to log file")
+		historyFile    = flag.String("history", "", "path to history file")
+		vimMode        = flag.Bool("vim", false, "enable vim mode")
 	)
 	flag.Parse()
 
@@ -36,8 +38,8 @@ func main() {
 		}
 	}()
 
-	if *addrFile == "" {
-		panic("-addrfile not specified")
+	if *clientAddrFile == "" {
+		panic("-clientaddrfile not specified")
 	}
 
 	if *logFile != "" {
@@ -56,29 +58,46 @@ func main() {
 	defer restore(originalTermState)
 	defer fmt.Println()
 
+	var programListener net.Listener
+	if *progPortFile != "" {
+		// Listen to localhost on ipv4, and get a randomly-assigned port.
+		if programListener, err = net.Listen("tcp", "127.0.0.1:"); err != nil {
+			panic("listen error: " + err.Error())
+		}
+		defer programListener.Close()
+
+		if err := ioutil.WriteFile(*progPortFile, []byte(strconv.Itoa(programListener.Addr().(*net.TCPAddr).Port)), 0644); err != nil {
+			panic("failed to write progportfile: " + err.Error())
+		}
+		defer os.Remove(*progPortFile)
+	}
+
 	// Listen to localhost on ipv4, and get a randomly-assigned port.
-	listener, err := net.Listen("tcp", "127.0.0.1:")
+	clientListener, err := net.Listen("tcp", "127.0.0.1:")
 	if err != nil {
 		panic("listen error: " + err.Error())
 	}
-	defer listener.Close()
+	defer clientListener.Close()
 
-	if err := ioutil.WriteFile(*addrFile, []byte(listener.Addr().String()), 0644); err != nil {
-		panic("failed to write addrfile: " + err.Error())
+	if err := ioutil.WriteFile(*clientAddrFile, []byte(clientListener.Addr().String()), 0644); err != nil {
+		panic("failed to write clientaddrfile: " + err.Error())
 	}
-	defer os.Remove(*addrFile)
+	defer os.Remove(*clientAddrFile)
 
-	conn, err := listener.Accept()
+	clientConn, err := clientListener.Accept()
 	if err != nil {
 		panic("failed to accept connection: " + err.Error())
 	}
 
-	dc := newDebugConsole(conn, &readline.Config{
+	dc := newDebugConsole(clientConn, programListener, &readline.Config{
 		Prompt:      "Debug Console> ",
 		HistoryFile: *historyFile,
 		VimMode:     *vimMode,
 	})
-	go dc.processInput()
+
+	var wg sync.WaitGroup
+	dc.processInput(&wg)
+	dc.handleProgramConnections(&wg)
 
 	for {
 		fmt.Println(color.YellowString("Program is running..."))
@@ -92,6 +111,7 @@ func main() {
 	}
 
 	fmt.Println(color.YellowString("Exiting."))
+	wg.Wait()
 }
 
 func restore(state *readline.State) {
@@ -102,17 +122,19 @@ func restore(state *readline.State) {
 
 type debugConsole struct {
 	shell                       *ishell.Shell
-	conn                        net.Conn
+	clientConn                  net.Conn
+	programListener             net.Listener
 	results, completions, ready chan string
 }
 
-func newDebugConsole(conn net.Conn, config *readline.Config) *debugConsole {
+func newDebugConsole(clientConn net.Conn, programListener net.Listener, config *readline.Config) *debugConsole {
 	dc := &debugConsole{
-		conn:        conn,
-		shell:       ishell.NewWithConfig(config),
-		results:     make(chan string, 1),
-		completions: make(chan string, 1),
-		ready:       make(chan string),
+		shell:           ishell.NewWithConfig(config),
+		clientConn:      clientConn,
+		programListener: programListener,
+		results:         make(chan string, 1),
+		completions:     make(chan string, 1),
+		ready:           make(chan string),
 	}
 
 	dc.shell.AddCmd(&ishell.Cmd{
@@ -154,51 +176,150 @@ func newDebugConsole(conn net.Conn, config *readline.Config) *debugConsole {
 	return dc
 }
 
-func (dc *debugConsole) processInput() {
-	defer dc.shell.Close()
+func (dc *debugConsole) processInput(wg *sync.WaitGroup) {
+	wg.Add(1)
+	go func() {
+		defer dc.shell.Close()
+		defer wg.Done()
 
-	r := bufio.NewReader(dc.conn)
-	for {
-		chunk, err := r.ReadString(':')
-		if err == io.EOF {
-			close(dc.ready)
-			return
-		}
-		if err != nil {
-			panic("error reading input: %s" + err.Error())
-		}
-
-		indicator := chunk[0]
-		inputLength, err := strconv.Atoi(chunk[1 : len(chunk)-1])
-		if err != nil {
-			panic(err)
-		}
-
-		b := make([]byte, inputLength)
-		if _, err := io.ReadFull(r, b); err != nil {
-			panic(err)
-		}
-		rest := string(b)
-
-		switch indicator {
-		case '@':
-			dc.ready <- rest
-		case '!':
-			dc.results <- rest
-		case '?':
-			// never block on sending a completion result, so only send it if there's space in the buffer
-			if len(dc.completions) < cap(dc.completions) {
-				dc.completions <- rest
+		r := bufio.NewReader(dc.clientConn)
+		for {
+			chunk, err := r.ReadString(':')
+			if err == io.EOF {
+				close(dc.ready)
+				return
 			}
-		default:
-			log.Printf("unknown input indicator: %v", indicator)
+			if err != nil {
+				panic("error reading input: %s" + err.Error())
+			}
+
+			indicator := chunk[0]
+			inputLength, err := strconv.Atoi(chunk[1 : len(chunk)-1])
+			if err != nil {
+				panic(err)
+			}
+
+			b := make([]byte, inputLength)
+			if _, err := io.ReadFull(r, b); err != nil {
+				panic(err)
+			}
+			rest := string(b)
+
+			switch indicator {
+			case '@':
+				dc.ready <- rest
+			case '!':
+				dc.results <- rest
+			case '?':
+				// never block on sending a completion result, so only send it if there's space in the buffer
+				if len(dc.completions) < cap(dc.completions) {
+					dc.completions <- rest
+				}
+			default:
+				log.Printf("unknown input indicator: %v", indicator)
+			}
 		}
+	}()
+}
+
+func (dc *debugConsole) handleProgramConnections(wg *sync.WaitGroup) {
+	go func() {
+		defer wg.Done()
+		for {
+			conn, err := dc.programListener.Accept()
+			if err != nil {
+				return
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				dc.processProgramOutput(conn)
+			}()
+		}
+	}()
+}
+
+// TODO: should we start the console with some flag indicating how to parse program output?
+// right now this assumes JUnit
+func (dc *debugConsole) processProgramOutput(conn net.Conn) {
+	const (
+		testRunStart = "%TESTC"
+		testRunEnd   = "%RUNTIME"
+		testStart    = "%TESTS"
+		testEnd      = "%TESTE"
+		testFailed   = "%FAILED"
+		testError    = "%ERROR"
+		traceStart   = "%TRACES"
+		traceEnd     = "%TRACEE"
+	)
+	var (
+		scanner = bufio.NewScanner(conn)
+		inTrace bool
+	)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !inTrace && strings.HasPrefix(line, traceStart) {
+			inTrace = true
+			continue
+		}
+		if inTrace && strings.HasPrefix(line, traceEnd) {
+			inTrace = false
+			continue
+		}
+		if inTrace {
+			log.Printf("trace: %s", line)
+			continue
+		}
+		if strings.HasPrefix(line, testRunStart) {
+			fields := strings.Fields(line)
+			if len(fields) != 3 {
+				log.Printf("%s expected 3 fields, got %d", testRunStart, len(fields))
+				return
+			}
+			if fields[2] != "v2" {
+				log.Printf("%s expected v2, got %s", fields[2])
+				return
+			}
+			log.Printf("running %s tests", fields[1])
+		} else if strings.HasPrefix(line, testRunEnd) {
+			elapsedMillis := line[len(testRunEnd):]
+			log.Printf("test run finished in %s milliseconds", elapsedMillis)
+		} else if strings.HasPrefix(line, testStart) {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				log.Printf("%s expected 2 fields, got %d", testStart, len(fields))
+				return
+			}
+			fields = strings.Split(fields[1], ",") // testID,testName
+			log.Printf("test %s started", fields[1])
+		} else if strings.HasPrefix(line, testEnd) {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				log.Printf("%s expected 2 fields, got %d", testEnd, len(fields))
+				return
+			}
+			fields = strings.Split(fields[1], ",") // testID,testName
+			log.Printf("test %s ended", fields[1])
+		} else if strings.HasPrefix(line, testFailed) || strings.HasPrefix(line, testError) {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				log.Printf("%s expected 2 fields, got %d", testFailed+" or "+testError, len(fields))
+				return
+			}
+			fields = strings.Split(fields[1], ",") // testID,testName
+			log.Printf("test %s errored or failed", fields[1])
+		} else {
+			log.Printf("unknown: %s", line)
+		}
+	}
+	if scanner.Err() != nil {
+		log.Printf("program output reader encountered unexpected error: %s", scanner.Err())
 	}
 }
 
 func (dc *debugConsole) writeOutput(action rune, line string) {
 	expr := string(action) + line
-	if _, err := fmt.Fprintf(dc.conn, "%d#%s\n", len(expr), expr); err != nil {
+	if _, err := fmt.Fprintf(dc.clientConn, "%d#%s\n", len(expr), expr); err != nil {
 		panic("failed to write to input socket: " + err.Error())
 	}
 }

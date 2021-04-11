@@ -4,18 +4,112 @@ let s:current_buffer = v:null
 let s:test_runner_main_class = v:null
 let s:test_runner_args_builder = {mainclass -> mainclass}
 
+function! dap#lang#java#launch(params) abort
+  call dap#log('Port: '.dap#get_program_listener_port())
+  call dap#log('(Before) Args: '.a:params['args'])
+  let a:params['args'] = substitute(a:params['args'], '-port \d* ', '-port '.dap#get_program_listener_port().' ', '')
+  call dap#log('(After) Args: '.a:params['args'])
+  call dap#launch(a:params)
+endfunction
+
 function! dap#lang#java#run_test_class() abort
   call dap#run('%')
 endfunction
 
+function! s:run_test_item(buffer, test_item) abort
+  " vscode.java.test.junit.argument
+  function! s:junit_args_callback(data) closure
+    if has_key(a:data, 'result')
+      let g:junit_args_result = a:data['result']
+        let l:junit_args = a:data['result']
+        call dap#run(a:buffer, #{
+              \ type: 'java',
+              \ mainClass: l:junit_args['mainClass'],
+              \ args: join(l:junit_args['programArguments']),
+              \ vmArgs: join(l:junit_args['vmArguments']),
+              \ classPaths: l:junit_args['classpath'],
+              \ modulePaths: l:junit_args['modulepath'],
+              \ cwd: l:junit_args['workingDirectory'],
+              \ projectName: l:junit_args['projectName'],
+              \ shortenCommandLine: 'jarmanifest',
+              \ })
+    elseif has_key(a:data, 'error')
+      call dap#log_error('Call to vscode.java.test.junit.argument unexpected response.')
+    endif
+  endfunction
+
+  let l:nameParts = split(a:test_item['fullName'], '#')
+  let l:className = l:nameParts[0]
+  let l:methodName = ''
+  if len(l:nameParts) > 1
+    let l:methodName = l:nameParts[1]
+  endif
+
+  let l:params = #{
+        \ uri: 'file://'.getbufinfo(a:buffer)[0]['name'],
+        \ fullName: l:className,
+        \ testName: l:methodName,
+        \ project: a:test_item['project'],
+        \ scope: a:test_item['level'],
+        \ testKind: a:test_item['kind'],
+        \ start: a:test_item['location']['range']['start'],
+        \ end: a:test_item['location']['range']['end'],
+        \ }
+
+  call dap#log('Params: '.json_encode(l:params))
+
+  call dap#log('Calling vscode.java.test.junit.argument')
+  call dap#lsp#execute_command(a:buffer, 'vscode.java.test.junit.argument', [json_encode(l:params)], function('s:junit_args_callback'))
+endfunction
+
 function! dap#lang#java#run_test_method() abort
-  let l:class_name = dap#lang#java#full_class_name('%')
-  let l:test_name = dap#lang#java#test_name()
-  call dap#run('%', l:class_name.'#'.l:test_name)
+  let l:buffer = bufnr('%')
+  function! s:code_lens_callback(data) closure
+    if has_key(a:data, 'result')
+      let l:test_items = a:data['result']
+      call filter(l:test_items, 'v:val["level"] == 4')
+      call filter(l:test_items, 'v:val["location"]["range"]["start"]["line"] < '.line('.'))
+
+      " sort by line number, descending
+      function! s:test_items_sort(x, y)
+        return a:y['location']['range']['start']['line'] - a:x['location']['range']['start']['line'] 
+      endfunction
+
+      call sort(l:test_items, function('s:test_items_sort'))
+
+      if !empty(l:test_items)
+        call s:run_test_item(l:buffer, l:test_items[0])
+      endif
+    elseif has_key(a:data, 'error')
+      call dap#log_error('Call to vscode.java.test.search.codelens returned unexpected response.')
+    endif
+  endfunction
+
+  let l:params = ['file://'.getbufinfo('%')[0]['name']]
+  call dap#lsp#execute_command(l:buffer, 'vscode.java.test.search.codelens', l:params, function('s:code_lens_callback'))
+
+  "let l:class_name = dap#lang#java#full_class_name('%')
+  "let l:test_name = dap#lang#java#test_name()
+  "call dap#run('%', l:class_name.'#'.l:test_name)
 endfunction
 
 function! dap#lang#java#set_test_runner_main_class(class)
   let s:test_runner_main_class = a:class
+endfunction
+
+function! dap#lang#java#lens(buffer)
+  function! s:test_codelens_callback(data) closure
+    " TODO: if run-focus was requested, look for item with type == 4 (method)
+    " for run-buffer, look for item with type == 3 (class)
+    let g:lens_result = a:data['result']
+    for l:item in a:data['result']
+      echomsg l:item['displayName']
+    endfor
+  endfunction
+  let l:params = ['file://'.getbufinfo(a:buffer)[0]['name']]
+  let l:method = 'vscode.java.test.search.codelens'
+  call dap#log('Calling '.l:method)
+  call dap#lsp#execute_command(a:buffer, l:method, l:params, function('s:test_codelens_callback'))
 endfunction
 
 " This function can be used to customize how arguments are passed to the test
@@ -29,7 +123,7 @@ endfunction
 function! s:load_debug_settings(buffer, next) abort
   for l:path in ['.vim/launch.json', '.vscode/launch.json']
     if filereadable(l:path)
-      function! s:settings_updated_callback(data) closure
+      function! s:update_debug_settings_callback(data) closure
         if has_key(a:data, 'result')
           call dap#log('Debug settings updated')
           call dap#log(a:data['result'])
@@ -49,7 +143,7 @@ function! s:load_debug_settings(buffer, next) abort
       if !has_key(l:settings, 'logLevel')
         let l:settings['logLevel'] = 'warn'
       endif
-      call dap#lsp#execute_command(a:buffer, 'vscode.java.updateDebugSettings', [json_encode(l:settings)], function('s:settings_updated_callback'))
+      call dap#lsp#execute_command(a:buffer, 'vscode.java.updateDebugSettings', [json_encode(l:settings)], function('s:update_debug_settings_callback'))
       return
     endif
   endfor
@@ -57,7 +151,7 @@ function! s:load_debug_settings(buffer, next) abort
 endfunction
 
 function! s:start_debug_adapter(buffer) abort
-  function! s:cb(data) closure
+  function! s:start_debug_session_callback(data) closure
     if has_key(a:data, 'result')
       let l:port = a:data['result']
       echomsg 'Connecting to debug adapter on port '.l:port
@@ -70,7 +164,7 @@ function! s:start_debug_adapter(buffer) abort
     endif
   endfunction
 
-  call dap#lsp#execute_command(a:buffer, 'vscode.java.startDebugSession', [], function('s:cb'))
+  call dap#lsp#execute_command(a:buffer, 'vscode.java.startDebugSession', [], function('s:start_debug_session_callback'))
 endfunction
 
 function! dap#lang#java#run(buffer) abort
@@ -78,84 +172,11 @@ function! dap#lang#java#run(buffer) abort
     " Java at least requires us to start a new debug adapter for each session.
     call dap#restart(a:buffer)
   else
-    function! s:run_cb1() closure
+    function! s:settings_loaded() closure
       call s:start_debug_adapter(a:buffer)
     endfunction
-    call s:load_debug_settings(a:buffer, function('s:run_cb1'))
+    call s:load_debug_settings(a:buffer, function('s:settings_loaded'))
   endif
-endfunction
-
-function! dap#lang#java#launch(buffer, run_args) abort
-  let l:path = 'file://'.getbufinfo(a:buffer)[0]['name']
-
-  function! s:is_test_callback(data) closure
-    if has_key(a:data, 'error')
-      call dap#log_error('Error calling java.project.isTestFile: '.a:data['error']['message'])
-      return
-    endif
-    let l:is_test = a:data['result']
-
-    function! s:get_classpaths_callback(data) closure
-      if has_key(a:data, 'error')
-        call dap#log_error('Error calling java.project.getClasspaths: '.a:data['error']['message'])
-        return
-      endif
-      let l:project_root = dap#util#uri_to_path(a:data['result']['projectRoot'])
-      let l:project_name = fnamemodify(l:project_root, ':t')
-      let l:classpaths = a:data['result']['classpaths']
-      let l:modulepaths = a:data['result']['modulepaths']
-
-      let l:args = join(a:run_args, ' ')
-
-      " If this is a test file, execute JUnit and pass the class in as an
-      " argument.
-      " TODO: shellescape args?
-      if l:is_test
-        let l:misc = s:plugin_home.'/misc'
-        call add(l:classpaths, l:misc)
-        let l:test_runner = s:test_runner_main_class
-        if l:test_runner == v:null
-          let l:test_runner = s:get_test_runner(a:buffer)
-          if !filereadable(l:misc.'/'.l:test_runner.'.class')
-            call dap#log('Classpaths: '.join(l:classpaths, ':'))
-            let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.l:test_runner.'.java"')
-            if v:shell_error
-              throw 'Failed to compile single test runner: '.l:output
-            endif
-          endif
-        endif
-
-        " TODO: use s:test_runner_args_builder again
-        if len(a:run_args) == 0
-          let l:args = dap#lang#java#full_class_name(a:buffer)
-        endif
-        call dap#launch({
-              \ 'mainClass': l:test_runner,
-              \ 'args': l:args,
-              \ 'classPaths': l:classpaths,
-              \ 'modulePaths': l:modulepaths,
-              \ 'cwd': l:project_root,
-              \ 'projectName': l:project_name,
-              \ 'shortenCommandLine': 'jarmanifest',
-              \ })
-      else
-        call dap#launch({
-              \ 'mainClass': dap#lang#java#full_class_name(a:buffer),
-              \ 'args': l:args,
-              \ 'classPaths': l:classpaths,
-              \ 'modulePaths': l:modulepaths,
-              \ 'cwd': l:project_root,
-              \ 'projectName': l:project_name,
-              \ 'shortenCommandLine': 'jarmanifest',
-              \ })
-      endif
-    endfunction
-
-    let l:scope = (l:is_test ? 'test' : 'runtime')
-    call dap#lsp#execute_command(a:buffer, 'java.project.getClasspaths', [l:path, json_encode({'scope': l:scope})], function('s:get_classpaths_callback'))
-  endfunction
-
-  call dap#lsp#execute_command(a:buffer, 'java.project.isTestFile', [l:path], function('s:is_test_callback'))
 endfunction
 
 function! s:find_line(buffer, pat) abort

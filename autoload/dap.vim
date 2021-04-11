@@ -38,6 +38,7 @@ endif
 function! dap#run(buffer, ...) abort
   let s:last_buffer = bufnr(a:buffer)
   let s:run_args = a:000
+  let g:run_args = s:run_args[0]
   call dap#run_last()
 endfunction
 
@@ -59,7 +60,7 @@ function! dap#run_last() abort
     call dap#restart(s:last_buffer)
   else
     echomsg 'Starting debugger'
-    call dap#lang#run(s:last_buffer, s:run_args)
+    call dap#lang#run(s:last_buffer)
   endif
 endfunction
 
@@ -126,9 +127,9 @@ function! dap#get_capabilities() abort
   return s:capabilities
 endfunction
 
-" NOTE: In order to run JUnit, you need to specify a mainClass of
-" org.junit.runner.JUnitCore along with an array of classpaths.
 function! dap#launch(arguments) abort
+  call dap#log('Launching...')
+  call dap#log(json_encode(a:arguments))
   if !s:is_open_socket_or_job(s:debug_adapter_job)
     call dap#log_error('No debug session running.')
     return
@@ -449,9 +450,8 @@ function! s:handle_response(data) abort
 endfunction
 
 function! s:handle_initialize_response() abort
-  call dap#lang#initialized(s:last_buffer, s:run_args)
-
   call s:run_debug_console()
+  call dap#lang#initialized(s:last_buffer, s:run_args)
 endfunction
 
 function! s:handle_initialized_event() abort
@@ -772,15 +772,26 @@ function! s:run_debug_console() abort
   if !executable(s:plugin_home.'/bin/console') || getfsize(s:plugin_home.'/bin/console') == 0
     throw 'Console is either not executable or empty, did you install it correctly?'
   endif
-  let l:addrfile = s:temp.'/console-addr'
+  let l:clientaddrfile = s:temp.'/console-client-addr'
+  let l:progportfile = s:temp.'/console-prog-addr'
   let l:logfile = s:temp.'/console-log'
   let l:historyfile = s:temp.'/console-history'
-  call delete(l:addrfile)
-  let l:command = './bin/console -addrfile '.l:addrfile.' -log '.l:logfile.' -history '.l:historyfile
+  call delete(l:clientaddrfile)
+  call delete(l:progportfile)
+  let l:command = join(['./bin/console', '-clientaddrfile', l:clientaddrfile, '-progportfile', l:progportfile, '-log', l:logfile, '-history', l:historyfile])
+  " TODO: once there's no reason to cd to plugin_home, it would be nice to
+  " avoid doing that
   call s:tmux_send_keys(s:console_pane, ['"clear; (cd '.s:plugin_home.' && '.l:command.')"', 'Enter'])
   let s:debug_console_socket = -1
-  call s:wait_for_file(l:addrfile)
-  let s:debug_console_socket = dap#io#sockconnect(readfile(l:addrfile)[0], function('s:handle_debug_console_stdout'))
+  call s:wait_for_file(l:clientaddrfile)
+  let s:debug_console_socket = dap#io#sockconnect(readfile(l:clientaddrfile)[0], function('s:handle_debug_console_stdout'))
+  call dap#log('Setting s:prog_console_port')
+  let s:prog_console_port = readfile(l:progportfile)[0]
+endfunction
+
+function! dap#get_program_listener_port()
+  call dap#log('Getting s:prog_console_port')
+  return s:prog_console_port
 endfunction
 
 function! dap#get_job() abort
