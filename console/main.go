@@ -281,7 +281,7 @@ func (dc *debugConsole) cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
 	// NOTE: this wordBreak != . check assumes a C-like language. Technically, it should
 	// be checking whether the character(s) at wordBreak represent a method call, and if
 	// so, completion should continue.
-	if line[wordBreak] != '.' && len(prefix) == 0 {
+	if wordBreak > -1 && line[wordBreak] != '.' && len(prefix) == 0 {
 		return nil, pos
 	}
 
