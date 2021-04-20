@@ -159,7 +159,7 @@ func (dc *debugConsole) processInput() {
 
 	r := bufio.NewReader(dc.conn)
 	for {
-		line, err := r.ReadString('\n')
+		chunk, err := r.ReadString(':')
 		if err == io.EOF {
 			close(dc.ready)
 			return
@@ -168,8 +168,18 @@ func (dc *debugConsole) processInput() {
 			panic("error reading input: %s" + err.Error())
 		}
 
-		indicator := line[0]
-		rest := line[1:]
+		indicator := chunk[0]
+		inputLength, err := strconv.Atoi(chunk[1 : len(chunk)-1])
+		if err != nil {
+			panic(err)
+		}
+
+		b := make([]byte, inputLength)
+		if _, err := io.ReadFull(r, b); err != nil {
+			panic(err)
+		}
+		rest := string(b)
+
 		switch indicator {
 		case '@':
 			dc.ready <- rest
@@ -267,7 +277,7 @@ func (dc *debugConsole) cmdStep(c *ishell.Context) {
 }
 
 func (dc *debugConsole) cmdEvalCompleter(line []rune, pos int) ([][]rune, int) {
-	dc.writeOutput('?', strconv.Itoa(pos)+"|"+string(line))
+	dc.writeOutput('?', strconv.Itoa(pos+1)+"|"+string(line))
 
 	wordBreak := -1
 	for i := pos - 1; i >= 0; i-- {

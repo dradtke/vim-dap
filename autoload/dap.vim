@@ -545,7 +545,7 @@ function! s:handle_event_stopped_stacktrace(data) abort
   let l:line = l:frame['line']
 
   exec ':keepalt edit +'.l:line.' '.l:path
-  call s:send_to_console('@'.fnamemodify(l:path, ':t').':'.l:line)
+  call s:send_to_console('@', fnamemodify(l:path, ':t').':'.l:line)
   call sign_place(1, 'dap-stopped-group', 'dap-stopped', '%', {'lnum': l:line, 'priority': 99})
 endfunction
 
@@ -840,17 +840,15 @@ endfunction
 
 function! dap#write_result(data) abort
   call dap#log('Evaluation result: '.a:data)
-  call s:send_to_console('!'.a:data)
+  call s:send_to_console('!', a:data)
 endfunction
 
 function! dap#write_completion(data) abort
-  call s:send_to_console('?'.a:data)
+  call s:send_to_console('?', a:data)
 endfunction
 
-function! s:send_to_console(data) abort
-  " TODO: support Vim 8 equivalent
-  " An empty string is written to make sure a final newline is sent.
-  call dap#io#send(s:debug_console_socket, a:data."\n")
+function! s:send_to_console(action, data) abort
+  call dap#io#send(s:debug_console_socket, a:action.len(a:data).':'.a:data)
 endfunction
 
 function! s:quit_console() abort
