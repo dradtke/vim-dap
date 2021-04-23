@@ -16,7 +16,6 @@ function! dap#lang#initialized(buffer, run_args) abort
   " a VM before setting breakpoints, but other languages may need things done
   " in a different order.
   if l:filetype == 'java'
-    let g:run_args = a:run_args[0]
     call dap#lang#java#launch(a:run_args[0])
   elseif l:filetype == 'go'
     call dap#lang#go#launch(a:buffer, a:run_args)

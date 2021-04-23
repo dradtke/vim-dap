@@ -26,6 +26,7 @@ func main() {
 	var (
 		clientAddrFile = flag.String("clientaddrfile", "", "file to write client connection information to")
 		progPortFile   = flag.String("progportfile", "", "file to write program connection information to")
+		progType       = flag.String("progtype", "", "type of the running program, i.e. 'java'")
 		logFile        = flag.String("log", "", "path to log file")
 		historyFile    = flag.String("history", "", "path to history file")
 		vimMode        = flag.Bool("vim", false, "enable vim mode")
@@ -58,38 +59,18 @@ func main() {
 	defer restore(originalTermState)
 	defer fmt.Println()
 
-	var programListener net.Listener
-	if *progPortFile != "" {
-		// Listen to localhost on ipv4, and get a randomly-assigned port.
-		if programListener, err = net.Listen("tcp", "127.0.0.1:"); err != nil {
-			panic("listen error: " + err.Error())
-		}
-		defer programListener.Close()
+	programListener, cleanupProgramListener := openListener(*progPortFile, writePort)
+	defer cleanupProgramListener()
 
-		if err := ioutil.WriteFile(*progPortFile, []byte(strconv.Itoa(programListener.Addr().(*net.TCPAddr).Port)), 0644); err != nil {
-			panic("failed to write progportfile: " + err.Error())
-		}
-		defer os.Remove(*progPortFile)
-	}
-
-	// Listen to localhost on ipv4, and get a randomly-assigned port.
-	clientListener, err := net.Listen("tcp", "127.0.0.1:")
-	if err != nil {
-		panic("listen error: " + err.Error())
-	}
-	defer clientListener.Close()
-
-	if err := ioutil.WriteFile(*clientAddrFile, []byte(clientListener.Addr().String()), 0644); err != nil {
-		panic("failed to write clientaddrfile: " + err.Error())
-	}
-	defer os.Remove(*clientAddrFile)
+	clientListener, cleanupClientListener := openListener(*clientAddrFile, writeAddr)
+	defer cleanupClientListener()
 
 	clientConn, err := clientListener.Accept()
 	if err != nil {
 		panic("failed to accept connection: " + err.Error())
 	}
 
-	dc := newDebugConsole(clientConn, programListener, &readline.Config{
+	dc := newDebugConsole(clientConn, *progType, programListener, &readline.Config{
 		Prompt:      "Debug Console> ",
 		HistoryFile: *historyFile,
 		VimMode:     *vimMode,
@@ -110,8 +91,38 @@ func main() {
 		dc.shell.Wait()
 	}
 
+	programListener.Close()
 	fmt.Println(color.YellowString("Exiting."))
 	wg.Wait()
+}
+
+func openListener(infoFile string, serializer func(net.Addr) []byte) (net.Listener, func()) {
+	if infoFile == "" {
+		return nil, func() {}
+	}
+	// Listen to localhost on ipv4, and get a randomly-assigned port.
+	listener, err := net.Listen("tcp", "127.0.0.1:")
+	if err != nil {
+		panic("listen error: " + err.Error())
+	}
+
+	if err := ioutil.WriteFile(infoFile, serializer(listener.Addr()), 0644); err != nil {
+		listener.Close()
+		panic("failed to write info file: " + err.Error())
+	}
+
+	return listener, func() {
+		listener.Close()
+		os.Remove(infoFile)
+	}
+}
+
+func writeAddr(addr net.Addr) []byte {
+	return []byte(addr.String())
+}
+
+func writePort(addr net.Addr) []byte {
+	return []byte(strconv.Itoa(addr.(*net.TCPAddr).Port))
 }
 
 func restore(state *readline.State) {
@@ -123,14 +134,16 @@ func restore(state *readline.State) {
 type debugConsole struct {
 	shell                       *ishell.Shell
 	clientConn                  net.Conn
+	programType                 string
 	programListener             net.Listener
 	results, completions, ready chan string
 }
 
-func newDebugConsole(clientConn net.Conn, programListener net.Listener, config *readline.Config) *debugConsole {
+func newDebugConsole(clientConn net.Conn, programType string, programListener net.Listener, config *readline.Config) *debugConsole {
 	dc := &debugConsole{
 		shell:           ishell.NewWithConfig(config),
 		clientConn:      clientConn,
+		programType:     programType,
 		programListener: programListener,
 		results:         make(chan string, 1),
 		completions:     make(chan string, 1),
@@ -184,7 +197,7 @@ func (dc *debugConsole) processInput(wg *sync.WaitGroup) {
 
 		r := bufio.NewReader(dc.clientConn)
 		for {
-			chunk, err := r.ReadString(':')
+			chunk, err := r.ReadString('#')
 			if err == io.EOF {
 				close(dc.ready)
 				return
@@ -193,8 +206,7 @@ func (dc *debugConsole) processInput(wg *sync.WaitGroup) {
 				panic("error reading input: %s" + err.Error())
 			}
 
-			indicator := chunk[0]
-			inputLength, err := strconv.Atoi(chunk[1 : len(chunk)-1])
+			inputLength, err := strconv.Atoi(chunk[:len(chunk)-1])
 			if err != nil {
 				panic(err)
 			}
@@ -203,7 +215,9 @@ func (dc *debugConsole) processInput(wg *sync.WaitGroup) {
 			if _, err := io.ReadFull(r, b); err != nil {
 				panic(err)
 			}
-			rest := string(b)
+
+			indicator := b[0]
+			rest := string(b[1:])
 
 			switch indicator {
 			case '@':
@@ -223,6 +237,10 @@ func (dc *debugConsole) processInput(wg *sync.WaitGroup) {
 }
 
 func (dc *debugConsole) handleProgramConnections(wg *sync.WaitGroup) {
+	if dc.programListener == nil {
+		return
+	}
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for {
@@ -233,15 +251,18 @@ func (dc *debugConsole) handleProgramConnections(wg *sync.WaitGroup) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				dc.processProgramOutput(conn)
+				switch dc.programType {
+				case "java":
+					dc.processJUnitOutput(conn)
+				default:
+					// nothing to do
+				}
 			}()
 		}
 	}()
 }
 
-// TODO: should we start the console with some flag indicating how to parse program output?
-// right now this assumes JUnit
-func (dc *debugConsole) processProgramOutput(conn net.Conn) {
+func (dc *debugConsole) processJUnitOutput(conn net.Conn) {
 	const (
 		testRunStart = "%TESTC"
 		testRunEnd   = "%RUNTIME"
@@ -267,7 +288,7 @@ func (dc *debugConsole) processProgramOutput(conn net.Conn) {
 			continue
 		}
 		if inTrace {
-			log.Printf("trace: %s", line)
+			dc.writeQuickfix(line)
 			continue
 		}
 		if strings.HasPrefix(line, testRunStart) {
@@ -280,10 +301,10 @@ func (dc *debugConsole) processProgramOutput(conn net.Conn) {
 				log.Printf("%s expected v2, got %s", fields[2])
 				return
 			}
-			log.Printf("running %s tests", fields[1])
+			dc.writeQuickfix("Running %s tests", fields[1])
 		} else if strings.HasPrefix(line, testRunEnd) {
 			elapsedMillis := line[len(testRunEnd):]
-			log.Printf("test run finished in %s milliseconds", elapsedMillis)
+			dc.writeQuickfix("Test run finished in %s milliseconds", elapsedMillis)
 		} else if strings.HasPrefix(line, testStart) {
 			fields := strings.Fields(line)
 			if len(fields) != 2 {
@@ -291,7 +312,7 @@ func (dc *debugConsole) processProgramOutput(conn net.Conn) {
 				return
 			}
 			fields = strings.Split(fields[1], ",") // testID,testName
-			log.Printf("test %s started", fields[1])
+			dc.writeQuickfix("Test started: %s", fields[1])
 		} else if strings.HasPrefix(line, testEnd) {
 			fields := strings.Fields(line)
 			if len(fields) != 2 {
@@ -299,7 +320,7 @@ func (dc *debugConsole) processProgramOutput(conn net.Conn) {
 				return
 			}
 			fields = strings.Split(fields[1], ",") // testID,testName
-			log.Printf("test %s ended", fields[1])
+			dc.writeQuickfix("Test ended: %s", fields[1])
 		} else if strings.HasPrefix(line, testFailed) || strings.HasPrefix(line, testError) {
 			fields := strings.Fields(line)
 			if len(fields) != 2 {
@@ -307,7 +328,7 @@ func (dc *debugConsole) processProgramOutput(conn net.Conn) {
 				return
 			}
 			fields = strings.Split(fields[1], ",") // testID,testName
-			log.Printf("test %s errored or failed", fields[1])
+			dc.writeQuickfix("Test errored or failed: %s", fields[1])
 		} else {
 			log.Printf("unknown: %s", line)
 		}
@@ -317,8 +338,13 @@ func (dc *debugConsole) processProgramOutput(conn net.Conn) {
 	}
 }
 
+func (dc *debugConsole) writeQuickfix(line string, v ...interface{}) {
+	dc.writeOutput('q', fmt.Sprintf(line, v...))
+}
+
 func (dc *debugConsole) writeOutput(action rune, line string) {
 	expr := string(action) + line
+	log.Printf("writing line: %s", fmt.Sprintf("%d#%s", len(expr), expr))
 	if _, err := fmt.Fprintf(dc.clientConn, "%d#%s\n", len(expr), expr); err != nil {
 		panic("failed to write to input socket: " + err.Error())
 	}

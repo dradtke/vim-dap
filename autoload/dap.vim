@@ -30,6 +30,7 @@ if !exists('g:dap_initialized')
   call delete(s:temp, 'rf')
   call mkdir(s:temp, 'p')
   let s:output_file = s:temp.'/output'
+  let s:using_quickfix = v:false
 
   call sign_define('dap-breakpoint', {'text': 'B'})
   call sign_define('dap-stopped', {'text': '>'})
@@ -38,7 +39,6 @@ endif
 function! dap#run(buffer, ...) abort
   let s:last_buffer = bufnr(a:buffer)
   let s:run_args = a:000
-  let g:run_args = s:run_args[0]
   call dap#run_last()
 endfunction
 
@@ -460,7 +460,7 @@ function! s:handle_initialized_event() abort
 endfunction
 
 function! s:handle_event(data) abort
-  call dap#log('Received event: '.a:data['event'])
+  "call dap#log('Received event: '.a:data['event'])
   if a:data['event'] == 'initialized'
     call s:handle_initialized_event()
   elseif a:data['event'] == 'output'
@@ -772,13 +772,14 @@ function! s:run_debug_console() abort
   if !executable(s:plugin_home.'/bin/console') || getfsize(s:plugin_home.'/bin/console') == 0
     throw 'Console is either not executable or empty, did you install it correctly?'
   endif
+  let l:progtype = getbufvar(s:last_buffer, '&filetype')
   let l:clientaddrfile = s:temp.'/console-client-addr'
   let l:progportfile = s:temp.'/console-prog-addr'
   let l:logfile = s:temp.'/console-log'
   let l:historyfile = s:temp.'/console-history'
   call delete(l:clientaddrfile)
   call delete(l:progportfile)
-  let l:command = join(['./bin/console', '-clientaddrfile', l:clientaddrfile, '-progportfile', l:progportfile, '-log', l:logfile, '-history', l:historyfile])
+  let l:command = join(['./bin/console', '-clientaddrfile', l:clientaddrfile, '-progportfile', l:progportfile, '-progtype', l:progtype, '-log', l:logfile, '-history', l:historyfile])
   " TODO: once there's no reason to cd to plugin_home, it would be nice to
   " avoid doing that
   call s:tmux_send_keys(s:console_pane, ['"clear; (cd '.s:plugin_home.' && '.l:command.')"', 'Enter'])
@@ -806,37 +807,48 @@ endfunction
 
 function! s:handle_debug_console_stdout(data) abort
   let s:console_buffer .= s:string(a:data, '')
-  let l:len_delim = stridx(s:console_buffer, '#')
-  if l:len_delim == -1
-    return
-  endif
-  let l:len = str2nr(s:console_buffer[:l:len_delim-1])
-  let l:rest = s:console_buffer[l:len_delim+1:]
-  if len(l:rest) < l:len
-    return
-  endif
+  while 1
+    let l:len_delim = stridx(s:console_buffer, '#')
+    if l:len_delim == -1
+      return
+    endif
+    let l:len = str2nr(s:console_buffer[:l:len_delim-1])
+    let l:rest = s:console_buffer[l:len_delim+1:]
+    if len(l:rest) < l:len
+      return
+    endif
 
-  let l:expr = l:rest[:l:len]
-  let s:console_buffer = l:rest[l:len+1:]
+    let l:expr = l:rest[:l:len-1]
+    let s:console_buffer = l:rest[l:len:]
 
-  let l:action = l:expr[0]
-  let l:text = l:expr[1:]
+    call dap#log('Received expr of length '.l:len.': '.l:expr)
 
-  if empty(l:text)
-    return
-  endif
+    let l:action = l:expr[0]
+    let l:text = l:expr[1:]
 
-  if l:action == ':'
-    call s:console_command(l:text)
-  elseif l:action == '!'
-    call dap#log('evaluating: '.l:text)
-    call dap#evaluate(l:text)
-  elseif l:action == '?'
-    let l:cursor_delim = stridx(l:text, '|')
-    let l:cursor_pos = str2nr(l:text[:l:cursor_delim-1])
-    let l:line = l:text[l:cursor_delim+1:]
-    call dap#completions(l:line, l:cursor_pos)
-  endif
+    if empty(l:text)
+      return
+    endif
+
+    if l:action == ':'
+      call s:console_command(l:text)
+    elseif l:action == '!'
+      call dap#log('evaluating: '.l:text)
+      call dap#evaluate(l:text)
+    elseif l:action == '?'
+      let l:cursor_delim = stridx(l:text, '|')
+      let l:cursor_pos = str2nr(l:text[:l:cursor_delim-1])
+      let l:line = l:text[l:cursor_delim+1:]
+      call dap#completions(l:line, l:cursor_pos)
+    elseif l:action == 'q'
+      if s:using_quickfix == v:false
+        call setqflist([], 'r')
+        let s:using_quickfix = v:true
+      endif
+      execute 'copen'
+      call setqflist([#{text: l:text}], 'a')
+    endif
+  endwhile
 endfunction
 
 function! s:console_command(command) abort
@@ -859,7 +871,7 @@ function! dap#write_completion(data) abort
 endfunction
 
 function! s:send_to_console(action, data) abort
-  call dap#io#send(s:debug_console_socket, a:action.len(a:data).':'.a:data)
+  call dap#io#send(s:debug_console_socket, (len(a:data)+1).'#'.a:action.a:data)
 endfunction
 
 function! s:quit_console() abort
@@ -867,6 +879,8 @@ function! s:quit_console() abort
     call dap#io#sockclose(s:debug_console_socket)
     let s:debug_console_socket = -1
   endif
+  let s:using_quickfix = v:false
+  let s:console_buffer = ''
 endfunction
 
 function! s:tmux_send_keys(pane, keys) abort

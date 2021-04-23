@@ -12,10 +12,6 @@ function! dap#lang#java#launch(params) abort
   call dap#launch(a:params)
 endfunction
 
-function! dap#lang#java#run_test_class() abort
-  call dap#run('%')
-endfunction
-
 function! s:run_test_item(buffer, test_item) abort
   " vscode.java.test.junit.argument
   function! s:junit_args_callback(data) closure
@@ -60,6 +56,11 @@ function! s:run_test_item(buffer, test_item) abort
 
   call dap#log('Calling vscode.java.test.junit.argument')
   call dap#lsp#execute_command(a:buffer, 'vscode.java.test.junit.argument', [json_encode(l:params)], function('s:junit_args_callback'))
+endfunction
+
+function! dap#lang#java#run_test_class() abort
+  " TODO: use the codelens here
+  call dap#run('%')
 endfunction
 
 function! dap#lang#java#run_test_method() abort
