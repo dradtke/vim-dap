@@ -806,13 +806,20 @@ function! dap#get_console_buffer() abort
 endfunction
 
 function! s:handle_debug_console_stdout(data) abort
+  " TODO: the elapsed line shows up here, but not in the processing
+  " WEIRD
+  for l:line in a:data
+    call dap#log('console: '.l:line)
+  endfor
   let s:console_buffer .= s:string(a:data, '')
   while 1
+    call dap#log('console buffer: '.s:console_buffer)
     let l:len_delim = stridx(s:console_buffer, '#')
     if l:len_delim == -1
       return
     endif
     let l:len = str2nr(s:console_buffer[:l:len_delim-1])
+    call dap#log('console: found length '.l:len)
     let l:rest = s:console_buffer[l:len_delim+1:]
     if len(l:rest) < l:len
       return
@@ -821,10 +828,18 @@ function! s:handle_debug_console_stdout(data) abort
     let l:expr = l:rest[:l:len-1]
     let s:console_buffer = l:rest[l:len:]
 
-    call dap#log('Received expr of length '.l:len.': '.l:expr)
-
     let l:action = l:expr[0]
     let l:text = l:expr[1:]
+
+    if l:action == 'q'
+      if s:using_quickfix == v:false
+        call setqflist([], ' ', #{id: 'dap-test-results', title: 'Test Results'})
+        let s:using_quickfix = v:true
+      endif
+      execute 'copen'
+      call setqflist([], 'a', #{id: 'dap-test-results', lines: [l:text]})
+      continue
+    endif
 
     if empty(l:text)
       return
@@ -840,13 +855,6 @@ function! s:handle_debug_console_stdout(data) abort
       let l:cursor_pos = str2nr(l:text[:l:cursor_delim-1])
       let l:line = l:text[l:cursor_delim+1:]
       call dap#completions(l:line, l:cursor_pos)
-    elseif l:action == 'q'
-      if s:using_quickfix == v:false
-        call setqflist([], 'r')
-        let s:using_quickfix = v:true
-      endif
-      execute 'copen'
-      call setqflist([#{text: l:text}], 'a')
     endif
   endwhile
 endfunction

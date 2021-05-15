@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/abiosoft/readline"
@@ -91,8 +92,18 @@ func main() {
 		dc.shell.Wait()
 	}
 
-	programListener.Close()
 	fmt.Println(color.YellowString("Exiting."))
+	time.Sleep(5 * time.Second)
+
+	if programListener != nil {
+		if err := programListener.Close(); err != nil {
+			log.Printf("error closing program listener: %s", err)
+		}
+	}
+	if err := dc.clientConn.Close(); err != nil {
+		log.Printf("error closing client connection: %s", err)
+	}
+
 	wg.Wait()
 }
 
