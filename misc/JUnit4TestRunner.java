@@ -10,18 +10,24 @@ import org.junit.runner.notification.Failure;
 
 public class JUnit4TestRunner {
   public static void main(String... args) throws ClassNotFoundException {
-    String[] classAndMethod = args[0].split("#");
+    String quickfixFile = args[0];
+    String[] classAndMethod = args[1].split("#");
     Request request = classAndMethod.length > 1
       ? Request.method(Class.forName(classAndMethod[0]), classAndMethod[1])
       : Request.aClass(Class.forName(classAndMethod[0]));
     JUnitCore core = new JUnitCore();
-    core.addListener(new Listener());
+    core.addListener(new Listener(quickfixFile));
     Result result = core.run(request);
     System.exit(result.wasSuccessful() ? 0 : 1);
   }
 
   static class Listener extends RunListener {
+    private String quickfixFile;
     private Instant startTime;
+
+    Listener(String quickfixFile) {
+      this.quickfixFile = quickfixFile;
+    }
 
     public void testRunStarted(Description description) {
       startTime = Instant.now();

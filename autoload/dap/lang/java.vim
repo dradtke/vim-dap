@@ -1,5 +1,6 @@
 let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h:h:h')
 let s:current_buffer = v:null
+let s:quickfix_file = v:null
 
 let s:test_runner_main_class = v:null
 let s:test_runner_args_builder = {mainclass -> mainclass}
@@ -9,9 +10,31 @@ function! dap#lang#java#run_test_class() abort
 endfunction
 
 function! dap#lang#java#run_test_method() abort
-  let l:class_name = dap#lang#java#full_class_name('%')
-  let l:test_name = dap#lang#java#test_name()
-  call dap#run('%', l:class_name.'#'.l:test_name)
+  let l:buffer = bufnr('%')
+  function! s:code_lens_callback(data) closure
+    if has_key(a:data, 'result')
+      let l:test_items = a:data['result']
+      call filter(l:test_items, 'v:val["level"] == 4')
+      call filter(l:test_items, 'v:val["location"]["range"]["start"]["line"] < '.line('.'))
+
+      " sort by line number, descending
+      function! s:test_items_sort(x, y)
+        return a:y['location']['range']['start']['line'] - a:x['location']['range']['start']['line'] 
+      endfunction
+
+      call sort(l:test_items, function('s:test_items_sort'))
+
+      if !empty(l:test_items)
+        call s:run_test_item(l:buffer, l:test_items[0])
+      endif
+    elseif has_key(a:data, 'error')
+      call dap#log_error('Call to vscode.java.test.search.codelens returned unexpected response.')
+    endif
+  endfunction
+
+  let l:params = ['file://'.getbufinfo('%')[0]['name']]
+  echomsg 'Running test code lens...'
+  call dap#lsp#execute_command(l:buffer, 'vscode.java.test.search.codelens', l:params, function('s:code_lens_callback'))
 endfunction
 
 function! dap#lang#java#set_test_runner_main_class(class)
@@ -24,6 +47,46 @@ endfunction
 " string which will be passed to the test runner as its arguments.
 function! dap#lang#java#set_test_runner_args_builder(f)
   let s:test_runner_args_builder = a:f
+endfunction
+
+function! s:run_test_item(buffer, test_item) abort
+  let l:test_runner = s:get_test_runner(a:test_item)
+
+  function! s:get_classpaths_callback(data) closure
+    if has_key(a:data, 'error')
+      call dap#log_error('Error calling java.project.getClasspaths: '.a:data['error']['message'])
+      return
+    endif
+    let l:project_root = dap#util#uri_to_path(a:data['result']['projectRoot'])
+    let l:project_name = fnamemodify(l:project_root, ':t')
+    let l:classpaths = a:data['result']['classpaths']
+    let l:modulepaths = a:data['result']['modulepaths']
+
+    " TODO: shellescape args?
+    let l:misc = s:plugin_home.'/misc'
+    call add(l:classpaths, l:misc)
+    if !filereadable(l:misc.'/'.l:test_runner.'.class')
+      call dap#log('Classpaths: '.join(l:classpaths, ':'))
+      let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.l:test_runner.'.java"')
+      if v:shell_error
+        throw 'Failed to compile single test runner: '.l:output
+      endif
+    endif
+
+    let s:quickfix_file = tempname()
+    let l:args = s:quickfix_file.' '.a:test_item['fullName']
+    call dap#run(a:buffer, {
+          \ 'mainClass': l:test_runner,
+          \ 'args': l:args,
+          \ 'classPaths': l:classpaths,
+          \ 'modulePaths': l:modulepaths,
+          \ 'cwd': l:project_root,
+          \ 'projectName': l:project_name,
+          \ 'shortenCommandLine': 'jarmanifest',
+          \ })
+  endfunction
+
+  call dap#lsp#execute_command(a:buffer, 'java.project.getClasspaths', [a:test_item['location']['uri'], json_encode({'scope': 'test'})], function('s:get_classpaths_callback'))
 endfunction
 
 function! s:load_debug_settings(buffer, next) abort
@@ -86,76 +149,9 @@ function! dap#lang#java#run(buffer) abort
 endfunction
 
 function! dap#lang#java#launch(buffer, run_args) abort
-  let l:path = 'file://'.getbufinfo(a:buffer)[0]['name']
-
-  function! s:is_test_callback(data) closure
-    if has_key(a:data, 'error')
-      call dap#log_error('Error calling java.project.isTestFile: '.a:data['error']['message'])
-      return
-    endif
-    let l:is_test = a:data['result']
-
-    function! s:get_classpaths_callback(data) closure
-      if has_key(a:data, 'error')
-        call dap#log_error('Error calling java.project.getClasspaths: '.a:data['error']['message'])
-        return
-      endif
-      let l:project_root = dap#util#uri_to_path(a:data['result']['projectRoot'])
-      let l:project_name = fnamemodify(l:project_root, ':t')
-      let l:classpaths = a:data['result']['classpaths']
-      let l:modulepaths = a:data['result']['modulepaths']
-
-      let l:args = join(a:run_args, ' ')
-
-      " If this is a test file, execute JUnit and pass the class in as an
-      " argument.
-      " TODO: shellescape args?
-      if l:is_test
-        let l:misc = s:plugin_home.'/misc'
-        call add(l:classpaths, l:misc)
-        let l:test_runner = s:test_runner_main_class
-        if l:test_runner == v:null
-          let l:test_runner = s:get_test_runner(a:buffer)
-          if !filereadable(l:misc.'/'.l:test_runner.'.class')
-            call dap#log('Classpaths: '.join(l:classpaths, ':'))
-            let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.l:test_runner.'.java"')
-            if v:shell_error
-              throw 'Failed to compile single test runner: '.l:output
-            endif
-          endif
-        endif
-
-        " TODO: use s:test_runner_args_builder again
-        if len(a:run_args) == 0
-          let l:args = dap#lang#java#full_class_name(a:buffer)
-        endif
-        call dap#launch({
-              \ 'mainClass': l:test_runner,
-              \ 'args': l:args,
-              \ 'classPaths': l:classpaths,
-              \ 'modulePaths': l:modulepaths,
-              \ 'cwd': l:project_root,
-              \ 'projectName': l:project_name,
-              \ 'shortenCommandLine': 'jarmanifest',
-              \ })
-      else
-        call dap#launch({
-              \ 'mainClass': dap#lang#java#full_class_name(a:buffer),
-              \ 'args': l:args,
-              \ 'classPaths': l:classpaths,
-              \ 'modulePaths': l:modulepaths,
-              \ 'cwd': l:project_root,
-              \ 'projectName': l:project_name,
-              \ 'shortenCommandLine': 'jarmanifest',
-              \ })
-      endif
-    endfunction
-
-    let l:scope = (l:is_test ? 'test' : 'runtime')
-    call dap#lsp#execute_command(a:buffer, 'java.project.getClasspaths', [l:path, json_encode({'scope': l:scope})], function('s:get_classpaths_callback'))
-  endfunction
-
-  call dap#lsp#execute_command(a:buffer, 'java.project.isTestFile', [l:path], function('s:is_test_callback'))
+  let g:launch_args = a:run_args[0]
+  call dap#launch(a:run_args[0])
+  " TODO: when finished, run :cfile to open any errors
 endfunction
 
 function! s:find_line(buffer, pat) abort
@@ -225,15 +221,19 @@ function! dap#lang#java#test_name() abort
   endwhile
 endfunction
 
-function! s:get_test_runner(buffer) abort
-  for l:line in getbufline(a:buffer, 1, '$')
-    if stridx(l:line, 'import org.junit.jupiter.api.Test') > -1
-      echoerr 'JUnit 5 is not supported (yet)'
-    elseif stridx(l:line, 'import org.junit.Test') > -1
-      return 'JUnit4TestRunner'
-    endif
-  endfor
-  echoerr 'No recognized Test imports found'
+function! s:get_test_runner(test_item) abort
+  let g:test_item = a:test_item
+  " See https://github.com/microsoft/vscode-java-test/blob/main/java-extension/com.microsoft.java.test.plugin/src/main/java/com/microsoft/java/test/plugin/model/TestKind.java
+  " The kind values for JUnit 4 and 5 may need to be swapped soon
+  if a:test_item['kind'] == '0'
+    echoerr 'JUnit 5 not yet supported'
+  elseif a:test_item['kind'] == '1'
+    return 'JUnit4TestRunner'
+  elseif a:test_item['kind'] == '2'
+    echoerr 'TestNG not yet supported'
+  else
+    echoerr 'Unknown test item kind: '.a:test_item['kind']
+  endif
 endfunction
 
 " vim: set expandtab shiftwidth=2 tabstop=2:
