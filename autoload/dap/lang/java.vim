@@ -5,6 +5,13 @@ let s:quickfix_file = v:null
 let s:test_runner_main_class = v:null
 let s:test_runner_args_builder = {mainclass -> mainclass}
 
+
+set errorformat+=%f:%l\ -\ %m
+augroup java_adapter_terminated
+  autocmd!
+  autocmd User dap_adapter_terminated call s:open_quickfix_file()
+augroup END
+
 function! dap#lang#java#run_test_class() abort
   call dap#run('%')
 endfunction
@@ -49,6 +56,12 @@ function! dap#lang#java#set_test_runner_args_builder(f)
   let s:test_runner_args_builder = a:f
 endfunction
 
+function! s:open_quickfix_file() abort
+  if filereadable(s:quickfix_file)
+    execute 'cfile! '.s:quickfix_file
+  endif
+endfunction
+
 function! s:run_test_item(buffer, test_item) abort
   let l:test_runner = s:get_test_runner(a:test_item)
 
@@ -73,8 +86,11 @@ function! s:run_test_item(buffer, test_item) abort
       endif
     endif
 
+    if s:quickfix_file != v:null
+      call delete(s:quickfix_file)
+    endif
     let s:quickfix_file = tempname()
-    let l:args = s:quickfix_file.' '.a:test_item['fullName']
+    let l:args = join([a:test_item['fullName'], expand('#'.a:buffer), s:quickfix_file])
     call dap#run(a:buffer, {
           \ 'mainClass': l:test_runner,
           \ 'args': l:args,
@@ -151,7 +167,6 @@ endfunction
 function! dap#lang#java#launch(buffer, run_args) abort
   let g:launch_args = a:run_args[0]
   call dap#launch(a:run_args[0])
-  " TODO: when finished, run :cfile to open any errors
 endfunction
 
 function! s:find_line(buffer, pat) abort

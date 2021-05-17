@@ -474,7 +474,7 @@ function! s:handle_event(data) abort
     let s:adapter_running = v:false
     let s:debuggee_running = v:false
     call dap#io#jobstop(s:debug_adapter_job)
-    " TODO: open a quickfix file
+    doautocmd User dap_adapter_terminated
     call s:reset()
     call s:quit_console()
   elseif a:data['event'] == 'exited'

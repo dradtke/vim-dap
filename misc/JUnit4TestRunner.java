@@ -1,5 +1,10 @@
+import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.Ignore;
 import org.junit.runner.Description;
 import org.junit.runner.JUnitCore;
@@ -10,23 +15,30 @@ import org.junit.runner.notification.Failure;
 
 public class JUnit4TestRunner {
   public static void main(String... args) throws ClassNotFoundException {
-    String quickfixFile = args[0];
-    String[] classAndMethod = args[1].split("#");
+    String[] classAndMethod = args[0].split("#");
+    String classFilepath = args[1];
+    String quickfixFile = args[2];
     Request request = classAndMethod.length > 1
       ? Request.method(Class.forName(classAndMethod[0]), classAndMethod[1])
       : Request.aClass(Class.forName(classAndMethod[0]));
     JUnitCore core = new JUnitCore();
-    core.addListener(new Listener(quickfixFile));
+    core.addListener(new Listener(classAndMethod[0], classFilepath, quickfixFile));
     Result result = core.run(request);
     System.exit(result.wasSuccessful() ? 0 : 1);
   }
 
   static class Listener extends RunListener {
-    private String quickfixFile;
+    private final String className;
+    private final String classFilepath;
+    private final String quickfixFile;
+    private final List<String> quickfixes;
     private Instant startTime;
 
-    Listener(String quickfixFile) {
+    Listener(String className, String classFilepath, String quickfixFile) {
+      this.className = className;
+      this.classFilepath = classFilepath;
       this.quickfixFile = quickfixFile;
+      this.quickfixes = new ArrayList<>();
     }
 
     public void testRunStarted(Description description) {
@@ -45,6 +57,12 @@ public class JUnit4TestRunner {
 
     public void testFailure(Failure failure) {
       System.out.println("    failure: " + failure.getMessage());
+      for (StackTraceElement el : failure.getException().getStackTrace()) {
+        if (el.getClassName().equals(this.className)) {
+          quickfixes.add(String.format("%s:%s - %s", this.classFilepath, el.getLineNumber(), failure.getMessage().replace("\n", " ")));
+          break;
+        }
+      }
     }
 
     public void testIgnored(Description description) {
@@ -66,6 +84,15 @@ public class JUnit4TestRunner {
       String testOrTests = result.getRunCount() == 1 ? "test" : "tests";
       String failureOrFailures = result.getFailureCount() == 1 ? "failure" : "failures";
       System.out.println("==== " + result.getRunCount() + " " + testOrTests + " run, " + result.getFailureCount() + " " + failureOrFailures + " in " + getReadableDuration(elapsed) + " ====");
+
+      if (!quickfixes.isEmpty()) {
+        try {
+          Files.write(Paths.get(quickfixFile), quickfixes);
+        } catch (IOException e) {
+          System.out.println();
+          System.out.println("Failed to write quickfix file " + quickfixFile + ": " + e.getMessage());
+        }
+      }
     }
 
     private boolean showStackTraceElement(StackTraceElement el) {
