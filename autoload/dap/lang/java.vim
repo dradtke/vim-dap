@@ -2,64 +2,89 @@ let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h:h:h')
 let s:current_buffer = v:null
 let s:quickfix_file = v:null
 
-let s:test_runner_main_class = v:null
-let s:test_runner_args_builder = {mainclass -> mainclass}
-
-
 set errorformat+=%f:%l\ -\ %m
+
 augroup java_adapter_terminated
   autocmd!
   autocmd User dap_adapter_terminated call s:open_quickfix_file()
 augroup END
 
+function! dap#lang#java#run(buffer) abort
+  if dap#is_connected()
+    " Java at least requires us to start a new debug adapter for each session.
+    call dap#restart(a:buffer)
+  else
+    function! s:run_load_debug_settings_callback() closure
+      call s:start_debug_adapter(a:buffer)
+    endfunction
+    call s:load_debug_settings(a:buffer, function('s:run_load_debug_settings_callback'))
+  endif
+endfunction
+
+function! dap#lang#java#launch(buffer, run_args) abort
+  call setqflist([])
+  if s:quickfix_file != v:null
+    call delete(s:quickfix_file)
+  endif
+
+  let g:launch_args = a:run_args[0]
+  call dap#launch(a:run_args[0])
+endfunction
+
 function! dap#lang#java#run_test_class() abort
-  call dap#run('%')
+  let l:buffer = bufnr('%')
+
+  function! s:run_test_class_items_callback(test_items) closure
+    call filter(a:test_items, 'v:val["level"] == 3')
+
+    if !empty(a:test_items)
+      call s:run_test_item(l:buffer, a:test_items[0])
+    endif
+  endfunction
+
+  call s:get_test_items(l:buffer, function('s:run_test_class_items_callback'))
 endfunction
 
 function! dap#lang#java#run_test_method() abort
   let l:buffer = bufnr('%')
-  function! s:code_lens_callback(data) closure
-    if has_key(a:data, 'result')
-      let l:test_items = a:data['result']
-      call filter(l:test_items, 'v:val["level"] == 4')
-      call filter(l:test_items, 'v:val["location"]["range"]["start"]["line"] < '.line('.'))
 
-      " sort by line number, descending
-      function! s:test_items_sort(x, y)
-        return a:y['location']['range']['start']['line'] - a:x['location']['range']['start']['line'] 
-      endfunction
+  function! s:run_test_method_items_callback(test_items) closure
+    call filter(a:test_items, 'v:val["level"] == 4')
+    call filter(a:test_items, 'v:val["location"]["range"]["start"]["line"] < '.line('.'))
 
-      call sort(l:test_items, function('s:test_items_sort'))
+    " sort by line number, descending
+    function! s:test_items_sort(x, y)
+      return a:y['location']['range']['start']['line'] - a:x['location']['range']['start']['line'] 
+    endfunction
 
-      if !empty(l:test_items)
-        call s:run_test_item(l:buffer, l:test_items[0])
-      endif
-    elseif has_key(a:data, 'error')
-      call dap#log_error('Call to vscode.java.test.search.codelens returned unexpected response.')
+    call sort(a:test_items, function('s:test_items_sort'))
+
+    if !empty(a:test_items)
+      call s:run_test_item(l:buffer, a:test_items[0])
     endif
   endfunction
 
-  let l:params = ['file://'.getbufinfo('%')[0]['name']]
-  echomsg 'Running test code lens...'
-  call dap#lsp#execute_command(l:buffer, 'vscode.java.test.search.codelens', l:params, function('s:code_lens_callback'))
-endfunction
-
-function! dap#lang#java#set_test_runner_main_class(class)
-  let s:test_runner_main_class = a:class
-endfunction
-
-" This function can be used to customize how arguments are passed to the test
-" runner. It expects a function which itself takes one argument, the
-" fully-qualified name of the class to run tests for, and should return a
-" string which will be passed to the test runner as its arguments.
-function! dap#lang#java#set_test_runner_args_builder(f)
-  let s:test_runner_args_builder = a:f
+  call s:get_test_items(l:buffer, function('s:run_test_method_items_callback'))
 endfunction
 
 function! s:open_quickfix_file() abort
   if filereadable(s:quickfix_file)
     execute 'cfile! '.s:quickfix_file
   endif
+endfunction
+
+function! s:get_test_items(buffer, callback) abort
+  function! s:code_lens_callback(data) closure
+    if has_key(a:data, 'result')
+      let l:test_items = a:data['result']
+      call a:callback(l:test_items)
+    elseif has_key(a:data, 'error')
+      call dap#log_error('Call to vscode.java.test.search.codelens returned unexpected response.')
+    endif
+  endfunction
+
+  let l:params = ['file://'.getbufinfo(a:buffer)[0]['name']]
+  call dap#lsp#execute_command(a:buffer, 'vscode.java.test.search.codelens', l:params, function('s:code_lens_callback'))
 endfunction
 
 function! s:run_test_item(buffer, test_item) abort
@@ -90,6 +115,7 @@ function! s:run_test_item(buffer, test_item) abort
       call delete(s:quickfix_file)
     endif
     let s:quickfix_file = tempname()
+
     let l:args = join([a:test_item['fullName'], expand('#'.a:buffer), s:quickfix_file])
     call dap#run(a:buffer, {
           \ 'mainClass': l:test_runner,
@@ -152,23 +178,6 @@ function! s:start_debug_adapter(buffer) abort
   call dap#lsp#execute_command(a:buffer, 'vscode.java.startDebugSession', [], function('s:cb'))
 endfunction
 
-function! dap#lang#java#run(buffer) abort
-  if dap#is_connected()
-    " Java at least requires us to start a new debug adapter for each session.
-    call dap#restart(a:buffer)
-  else
-    function! s:run_cb1() closure
-      call s:start_debug_adapter(a:buffer)
-    endfunction
-    call s:load_debug_settings(a:buffer, function('s:run_cb1'))
-  endif
-endfunction
-
-function! dap#lang#java#launch(buffer, run_args) abort
-  let g:launch_args = a:run_args[0]
-  call dap#launch(a:run_args[0])
-endfunction
-
 function! s:find_line(buffer, pat) abort
   let l:line_number = 1
   while 1
@@ -183,63 +192,9 @@ function! s:find_line(buffer, pat) abort
   endwhile
 endfunction
 
-function! dap#lang#java#package_name(buffer) abort
-  let l:package_line = s:find_line(a:buffer, '^package ')
-  if l:package_line == ''
-    return ''
-  endif
-
-  let l:parts = split(l:package_line)
-  let l:package = parts[1]
-  return substitute(l:package, ';', '', '')
-endfunction
-
-function! dap#lang#java#public_class_name(buffer) abort
-  let l:public_class_line = s:find_line(a:buffer, '^public class ')
-  if l:public_class_line == ''
-    throw 'No public class line found, is the buffer loaded?'
-  endif
-  let l:parts = split(l:public_class_line)
-  return l:parts[2]
-endfunction
-
-function! dap#lang#java#full_class_name(buffer) abort
-  let l:package_name = dap#lang#java#package_name(a:buffer)
-  let l:class_name = dap#lang#java#public_class_name(a:buffer)
-  if l:package_name == ''
-    return l:class_name
-  else
-    return l:package_name.'.'.l:class_name
-  endif
-endfunction
-
-function! dap#lang#java#test_name() abort
-  let l:line_number = search('^\s*@Test\>', 'bnW')
-  if l:line_number == 0
-    throw 'No @Test annotation found.'
-  endif
-  let l:line_number += 1
-  while 1
-    let l:line = getbufline('%', l:line_number)
-    if empty(l:line)
-      throw 'No public void method found after @Test annotation'
-    endif
-    if l:line[0] =~ '\s*public void '
-      let l:parts = split(l:line[0])
-      let l:test_name = l:parts[2]
-      let l:open_paren = stridx(l:test_name, '(')
-      if l:open_paren != -1
-        let l:test_name = l:test_name[:l:open_paren-1]
-      endif
-      return l:test_name
-    endif
-  endwhile
-endfunction
-
 function! s:get_test_runner(test_item) abort
   let g:test_item = a:test_item
   " See https://github.com/microsoft/vscode-java-test/blob/main/java-extension/com.microsoft.java.test.plugin/src/main/java/com/microsoft/java/test/plugin/model/TestKind.java
-  " The kind values for JUnit 4 and 5 may need to be swapped soon
   if a:test_item['kind'] == '0'
     echoerr 'JUnit 5 not yet supported'
   elseif a:test_item['kind'] == '1'
