@@ -29,7 +29,9 @@ if !exists('g:dap_initialized')
   let s:temp = '/tmp/vim-dap'
   call delete(s:temp, 'rf')
   call mkdir(s:temp, 'p')
+  let s:quickfix_file = tempname()
   let s:output_file = s:temp.'/output'
+  let s:console_buffer = ''
 
   call sign_define('dap-breakpoint', {'text': 'B'})
   call sign_define('dap-stopped', {'text': '>'})
@@ -203,9 +205,60 @@ function! dap#terminate(restart) abort
   call dap#send_message(dap#build_request('terminate', {'restart': a:restart}))
 endfunction
 
-function! s:buffer_path(buffer) abort
-  " prepend file:// if we need uris
-  return expand('#'.a:buffer.':p')
+function! dap#send_message(body) abort
+  let l:encoded_body = json_encode(a:body)
+  let l:content_length = strlen(l:encoded_body)
+  let l:message = "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body
+  call dap#io#send(s:debug_adapter_job, l:message)
+endfunction
+
+function! dap#build_request(command, arguments) abort
+  let l:request = {
+        \ 'seq': s:seq,
+        \ 'type': 'request',
+        \ 'command': a:command,
+        \ }
+  
+  if !empty(a:arguments)
+    let l:request['arguments'] = a:arguments
+  endif
+
+  let s:seq = s:seq+1
+  return l:request
+endfunction
+
+function! dap#list_breakpoints() abort
+  let l:list = []
+  for [l:bufnr, l:lines] in items(s:get_breakpoints())
+    for l:lnum in l:lines
+      call add(l:list, {'bufnr': l:bufnr, 'lnum': l:lnum})
+    endfor
+  endfor
+
+  call setloclist(0, l:list)
+  lopen
+endfunction
+
+function! dap#tail_output() abort
+  call writefile([], '/tmp/vim-dap.output')
+  call s:tmux_send_keys(s:output_pane, ['"tail -f '.s:output_file.'"', 'Enter'])
+endfunction
+
+function! dap#get_job() abort
+  return s:debug_adapter_job
+endfunction
+
+function! dap#get_console_buffer() abort
+  return s:console_buffer
+endfunction
+
+function! dap#write_result(data) abort
+  call dap#log('Evaluation result: '.a:data)
+  call s:send_to_console('!', a:data)
+endfunction
+
+function! dap#write_completion(data) abort
+  call s:send_to_console('?', a:data)
 endfunction
 
 function! dap#toggle_breakpoint(bufexpr, line) abort
@@ -273,6 +326,21 @@ endfunction
 function! dap#log_error(msg) abort
   call dap#log('[ERROR] '.a:msg)
   echohl ErrorMsg | echomsg a:msg | echohl None
+endfunction
+
+function! dap#clear_quickfix() abort
+  call delete(s:quickfix_file)
+  call setqflist([])
+endfunction
+
+function! dap#get_quickfix_file() abort
+  return s:quickfix_file
+endfunction
+
+function! dap#open_quickfix() abort
+  if filereadable(s:quickfix_file)
+    execute 'cfile! '.s:quickfix_file
+  endif
 endfunction
 
 function! s:reset()
@@ -615,28 +683,6 @@ function! s:handle_exit(exit_code) abort
   call dap#log('job exited with exit code '.a:exit_code)
 endfunction
 
-function! dap#send_message(body) abort
-  let l:encoded_body = json_encode(a:body)
-  let l:content_length = strlen(l:encoded_body)
-  let l:message = "Content-Length: ".l:content_length."\r\n\r\n".l:encoded_body
-  call dap#io#send(s:debug_adapter_job, l:message)
-endfunction
-
-function! dap#build_request(command, arguments) abort
-  let l:request = {
-        \ 'seq': s:seq,
-        \ 'type': 'request',
-        \ 'command': a:command,
-        \ }
-  
-  if !empty(a:arguments)
-    let l:request['arguments'] = a:arguments
-  endif
-
-  let s:seq = s:seq+1
-  return l:request
-endfunction
-
 function! s:build_response(request, success, body) abort
   let l:response = {
         \ 'seq': s:seq,
@@ -667,16 +713,19 @@ function! s:initialize() abort
         \ }))
 endfunction
 
-function! dap#list_breakpoints() abort
-  let l:list = []
-  for [l:bufnr, l:lines] in items(s:get_breakpoints())
-    for l:lnum in l:lines
-      call add(l:list, {'bufnr': l:bufnr, 'lnum': l:lnum})
-    endfor
-  endfor
+let s:output_pane = 1
+let s:console_pane = 2
 
-  call setloclist(0, l:list)
-  lopen
+function! s:split_panes() abort
+  " TODO: make pane sizes configurable
+  call system('tmux split-pane -p 40 -h')
+  call system('tmux split-pane -v')
+  call system('tmux select-pane -t 0')
+endfunction
+
+function! s:buffer_path(buffer) abort
+  " prepend file:// if we need uris
+  return expand('#'.a:buffer.':p')
 endfunction
 
 function! s:get_breakpoints() abort
@@ -734,37 +783,6 @@ function! s:set_all_breakpoints() abort
   endfor
 endfunction
 
-let s:output_pane = 1
-let s:console_pane = 2
-
-function! s:split_panes() abort
-  " TODO: make pane sizes configurable
-  call system('tmux split-pane -p 40 -h')
-  call system('tmux split-pane -v')
-  call system('tmux select-pane -t 0')
-endfunction
-
-function! dap#tail_output() abort
-  call writefile([], '/tmp/vim-dap.output')
-  call s:tmux_send_keys(s:output_pane, ['"tail -f '.s:output_file.'"', 'Enter'])
-endfunction
-
-function! s:run_debuggee(command) abort
-  let s:output_mode = 'terminal'
-  call s:tmux_send_keys(s:output_pane, ['"'.a:command.'"', 'Enter'])
-endfunction
-
-function! s:wait_for_file(path) abort
-  let l:try = 0
-  while !filereadable(a:path)
-    let l:try = l:try+1
-    if l:try > 10
-      throw 'File never appeared: '.a:path
-    endif
-    sleep 100m
-  endwhile
-endfunction
-
 function! s:run_debug_console() abort
   if s:is_open_socket_or_job(s:debug_console_socket)
     call s:quit_console()
@@ -784,14 +802,20 @@ function! s:run_debug_console() abort
   let s:debug_console_socket = dap#io#sockconnect(readfile(l:addrfile)[0], function('s:handle_debug_console_stdout'))
 endfunction
 
-function! dap#get_job() abort
-  return s:debug_adapter_job
+function! s:wait_for_file(path) abort
+  let l:try = 0
+  while !filereadable(a:path)
+    let l:try = l:try+1
+    if l:try > 10
+      throw 'File never appeared: '.a:path
+    endif
+    sleep 100m
+  endwhile
 endfunction
 
-let s:console_buffer = ''
-
-function! dap#get_console_buffer() abort
-  return s:console_buffer
+function! s:run_debuggee(command) abort
+  let s:output_mode = 'terminal'
+  call s:tmux_send_keys(s:output_pane, ['"'.a:command.'"', 'Enter'])
 endfunction
 
 function! s:handle_debug_console_stdout(data) abort
@@ -837,15 +861,6 @@ function! s:console_command(command) abort
   elseif a:command == 'next'
     call dap#next_stopped()
   endif
-endfunction
-
-function! dap#write_result(data) abort
-  call dap#log('Evaluation result: '.a:data)
-  call s:send_to_console('!', a:data)
-endfunction
-
-function! dap#write_completion(data) abort
-  call s:send_to_console('?', a:data)
 endfunction
 
 function! s:send_to_console(action, data) abort

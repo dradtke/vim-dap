@@ -1,12 +1,11 @@
 let s:plugin_home = fnamemodify(expand('<sfile>:p'), ':h:h:h:h')
 let s:current_buffer = v:null
-let s:quickfix_file = v:null
 
 set errorformat+=%f:%l\ -\ %m
 
 augroup java_adapter_terminated
   autocmd!
-  autocmd User dap_adapter_terminated call s:open_quickfix_file()
+  autocmd User dap_adapter_terminated call dap#open_quickfix()
 augroup END
 
 function! dap#lang#java#run(buffer) abort
@@ -22,10 +21,7 @@ function! dap#lang#java#run(buffer) abort
 endfunction
 
 function! dap#lang#java#launch(buffer, run_args) abort
-  call setqflist([])
-  if s:quickfix_file != v:null
-    call delete(s:quickfix_file)
-  endif
+  call dap#clear_quickfix()
 
   let g:launch_args = a:run_args[0]
   call dap#launch(a:run_args[0])
@@ -67,12 +63,6 @@ function! dap#lang#java#run_test_method() abort
   call s:get_test_items(l:buffer, function('s:run_test_method_items_callback'))
 endfunction
 
-function! s:open_quickfix_file() abort
-  if filereadable(s:quickfix_file)
-    execute 'cfile! '.s:quickfix_file
-  endif
-endfunction
-
 function! s:get_test_items(buffer, callback) abort
   function! s:code_lens_callback(data) closure
     if has_key(a:data, 'result')
@@ -111,12 +101,9 @@ function! s:run_test_item(buffer, test_item) abort
       endif
     endif
 
-    if s:quickfix_file != v:null
-      call delete(s:quickfix_file)
-    endif
-    let s:quickfix_file = tempname()
+    call dap#clear_quickfix()
 
-    let l:args = join([a:test_item['fullName'], expand('#'.a:buffer), s:quickfix_file])
+    let l:args = join([a:test_item['fullName'], expand('#'.a:buffer), dap#get_quickfix_file()])
     call dap#run(a:buffer, {
           \ 'mainClass': l:test_runner,
           \ 'args': l:args,
