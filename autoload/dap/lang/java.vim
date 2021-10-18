@@ -31,11 +31,12 @@ function! dap#lang#java#run_test_class() abort
   let l:buffer = bufnr('%')
 
   function! s:run_test_class_items_callback(test_items) closure
-    call filter(a:test_items, 'v:val["level"] == 3')
-
-    if !empty(a:test_items)
-      call s:run_test_item(l:buffer, a:test_items[0])
+    let g:test_items = a:test_items
+    call filter(a:test_items, 'v:val["testLevel"] == 5')
+    if empty(a:test_items)
+      echoerr 'No class test items found'
     endif
+    call s:run_test_item(l:buffer, a:test_items[0])
   endfunction
 
   call s:get_test_items(l:buffer, function('s:run_test_class_items_callback'))
@@ -45,18 +46,29 @@ function! dap#lang#java#run_test_method() abort
   let l:buffer = bufnr('%')
 
   function! s:run_test_method_items_callback(test_items) closure
-    call filter(a:test_items, 'v:val["level"] == 4')
-    call filter(a:test_items, 'v:val["location"]["range"]["start"]["line"] < '.line('.'))
+    let g:test_items = a:test_items
+    call filter(a:test_items, 'v:val["testLevel"] == 5')
+    if empty(a:test_items)
+      echoerr 'No class test items found'
+    endif
+
+    let l:method_test_items = get(a:test_items[0], 'children', [])
+    if empty(l:method_test_items)
+      echoerr 'No method test items found'
+    endif
+
+    call filter(l:method_test_items, 'v:val["testLevel"] == 6')
+    call filter(l:method_test_items, 'v:val["range"]["start"]["line"] < '.line('.'))
 
     " sort by line number, descending
     function! s:test_items_sort(x, y)
-      return a:y['location']['range']['start']['line'] - a:x['location']['range']['start']['line'] 
+      return a:y['range']['start']['line'] - a:x['range']['start']['line'] 
     endfunction
 
-    call sort(a:test_items, function('s:test_items_sort'))
+    call sort(l:method_test_items, function('s:test_items_sort'))
 
-    if !empty(a:test_items)
-      call s:run_test_item(l:buffer, a:test_items[0])
+    if !empty(l:method_test_items)
+      call s:run_test_item(l:buffer, l:method_test_items[0])
     endif
   endfunction
 
@@ -69,12 +81,12 @@ function! s:get_test_items(buffer, callback) abort
       let l:test_items = a:data['result']
       call a:callback(l:test_items)
     elseif has_key(a:data, 'error')
-      call dap#log_error('Call to vscode.java.test.search.codelens returned unexpected response.')
+      call dap#log_error('Call to vscode.java.test.findTestTypesAndMethods returned unexpected response.')
     endif
   endfunction
 
   let l:params = ['file://'.getbufinfo(a:buffer)[0]['name']]
-  call dap#lsp#execute_command(a:buffer, 'vscode.java.test.search.codelens', l:params, function('s:code_lens_callback'))
+  call dap#lsp#execute_command(a:buffer, 'vscode.java.test.findTestTypesAndMethods', l:params, function('s:code_lens_callback'))
 endfunction
 
 function! s:run_test_item(buffer, test_item) abort
@@ -115,7 +127,7 @@ function! s:run_test_item(buffer, test_item) abort
           \ })
   endfunction
 
-  call dap#lsp#execute_command(a:buffer, 'java.project.getClasspaths', [a:test_item['location']['uri'], json_encode({'scope': 'test'})], function('s:get_classpaths_callback'))
+  call dap#lsp#execute_command(a:buffer, 'java.project.getClasspaths', [a:test_item['uri'], json_encode({'scope': 'test'})], function('s:get_classpaths_callback'))
 endfunction
 
 function! s:load_debug_settings(buffer, next) abort
@@ -182,14 +194,14 @@ endfunction
 function! s:get_test_runner(test_item) abort
   let g:test_item = a:test_item
   " See https://github.com/microsoft/vscode-java-test/blob/main/java-extension/com.microsoft.java.test.plugin/src/main/java/com/microsoft/java/test/plugin/model/TestKind.java
-  if a:test_item['kind'] == '0'
+  if a:test_item['testKind'] == '0'
     echoerr 'JUnit 5 not yet supported'
-  elseif a:test_item['kind'] == '1'
+  elseif a:test_item['testKind'] == '1'
     return 'JUnit4TestRunner'
-  elseif a:test_item['kind'] == '2'
+  elseif a:test_item['testKind'] == '2'
     echoerr 'TestNG not yet supported'
   else
-    echoerr 'Unknown test item kind: '.a:test_item['kind']
+    echoerr 'Unknown test item kind: '.a:test_item['testKind']
   endif
 endfunction
 
