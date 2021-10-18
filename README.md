@@ -36,6 +36,14 @@ initialize the server with the path of the debug jar bundle. An example using
 }
 ```
 
+You will also need to add all of the jars included in the server extension for
+[vscode-java-test](https://github.com/microsoft/vscode-java-test). The easiest
+way to do that is to download it from the VSCode Marketplace:
+
+```
+https://vscjava.gallery.vsassets.io/_apis/public/gallery/publisher/vscjava/extension/vscode-java-test/${version}/assetbyname/Microsoft.VisualStudio.Services.VSIXPackage
+```
+
 #### Debugger Settings
 
 The [debug
@@ -45,7 +53,7 @@ can be customized by defining either a `.vim/launch.json` or
 
 ```json
 {
-  "javaHome": "/usr/lib/jvm/java-8-openjdk-amd64"
+  "javaHome": "/usr/lib/jvm/java-11-openjdk-amd64"
 }
 ```
 
