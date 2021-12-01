@@ -1,7 +1,7 @@
 local M = {}
 
 function M.execute_command(buffer, command, args)
-  function handler(err, method, result, client_id, bufnr, config)
+  function handler(err, result, ctx, config)
     if err then
       error(tostring(err))
     else

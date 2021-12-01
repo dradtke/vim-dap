@@ -7,6 +7,9 @@ it doesn't attempt to replicate the user interface of an IDE; instead,
 interaction with the debugger happens in the terminal, through a fully
 readline-enabled debugger console:
 
+Neovim's LSP API appears to still be in flux, so if something isn't working, the
+first thing to try would be to upgrade to the latest Neovim release.
+
 ![demo](misc/demo.gif)
 
 ## Supported Languages
