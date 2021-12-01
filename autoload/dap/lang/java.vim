@@ -22,8 +22,6 @@ endfunction
 
 function! dap#lang#java#launch(buffer, run_args) abort
   call dap#clear_quickfix()
-
-  let g:launch_args = a:run_args[0]
   call dap#launch(a:run_args[0])
 endfunction
 
@@ -31,7 +29,6 @@ function! dap#lang#java#run_test_class() abort
   let l:buffer = bufnr('%')
 
   function! s:run_test_class_items_callback(test_items) closure
-    let g:test_items = a:test_items
     call filter(a:test_items, 'v:val["testLevel"] == 5')
     if empty(a:test_items)
       echoerr 'No class test items found'
@@ -46,7 +43,6 @@ function! dap#lang#java#run_test_method() abort
   let l:buffer = bufnr('%')
 
   function! s:run_test_method_items_callback(test_items) closure
-    let g:test_items = a:test_items
     call filter(a:test_items, 'v:val["testLevel"] == 5')
     if empty(a:test_items)
       echoerr 'No class test items found'
@@ -192,7 +188,6 @@ function! s:find_line(buffer, pat) abort
 endfunction
 
 function! s:get_test_runner(test_item) abort
-  let g:test_item = a:test_item
   " See https://github.com/microsoft/vscode-java-test/blob/main/java-extension/com.microsoft.java.test.plugin/src/main/java/com/microsoft/java/test/plugin/model/TestKind.java
   if a:test_item['testKind'] == '0'
     echoerr 'JUnit 5 not yet supported'

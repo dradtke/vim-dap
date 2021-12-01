@@ -403,8 +403,6 @@ function! s:handle_stdout(data) abort
       return
     endif
 
-    let g:dap_last_message = l:body
-
     let l:message_type = l:body['type']
     if l:message_type == 'response'
       call s:handle_response(l:body)
@@ -421,14 +419,12 @@ function! s:handle_response(data) abort
 
   " Handle failure cases first.
   if !a:data['success']
-    let g:failed_response = a:data
     if l:command == 'initialize'
       call dap#log_error('Initialization failed')
       call s:reset()
     elseif l:command == 'evaluate'
       if has_key(a:data, 'body') && has_key(a:data['body'], 'error')
         let l:error = a:data['body']['error']
-        let g:last_error = l:error
         call dap#log('Evaluation failed: '.json_encode(l:error))
         " TODO: respect showUser?
         let l:format = l:error['format']
@@ -549,7 +545,6 @@ function! s:handle_event(data) abort
     let s:debuggee_running = v:false
     call s:quit_console()
     let l:exit_code = a:data['body']['exitCode']
-    let g:exit_code = l:exit_code
     if l:exit_code == v:null
       echomsg 'Process exited'
     else
