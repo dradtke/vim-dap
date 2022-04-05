@@ -784,7 +784,11 @@ function! s:run_debug_console() abort
     sleep 1
   endif
   if !executable(s:plugin_home.'/bin/console') || getfsize(s:plugin_home.'/bin/console') == 0
-    throw 'Console is either not executable or empty, did you install it correctly?'
+    if has('unix')
+      call system(s:plugin_home.'/install-console.sh')
+    else
+      throw 'Console is either not executable or empty, did you install it correctly?'
+    endif
   endif
   let l:addrfile = s:temp.'/console-addr'
   let l:logfile = s:temp.'/console-log'
