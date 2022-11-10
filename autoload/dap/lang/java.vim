@@ -103,7 +103,8 @@ function! s:run_test_item(buffer, test_item) abort
     call add(l:classpaths, l:misc)
     if !filereadable(l:misc.'/'.l:test_runner.'.class')
       call dap#log('Classpaths: '.join(l:classpaths, ':'))
-      let l:output = system('javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.l:test_runner.'.java"')
+      let l:compile_command = 'javac -cp "'.join(l:classpaths, ':').'" -d "'.l:misc.'" "'.l:misc.'/'.l:test_runner.'.java"'
+      let l:output = system(l:compile_command)
       if v:shell_error
         throw 'Failed to compile single test runner: '.l:output
       endif
@@ -190,7 +191,7 @@ endfunction
 function! s:get_test_runner(test_item) abort
   " See https://github.com/microsoft/vscode-java-test/blob/main/java-extension/com.microsoft.java.test.plugin/src/main/java/com/microsoft/java/test/plugin/model/TestKind.java
   if a:test_item['testKind'] == '0'
-    echoerr 'JUnit 5 not yet supported'
+    return 'JUnit5TestRunner'
   elseif a:test_item['testKind'] == '1'
     return 'JUnit4TestRunner'
   elseif a:test_item['testKind'] == '2'
